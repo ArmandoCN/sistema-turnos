@@ -38,8 +38,11 @@
           <span id="texto-sse">Conectando...</span>
         </span>
         <span id="reloj-servidor" class="reloj-servidor" aria-label="Fecha y hora del sistema">--/--/-- --:--</span>
-        <button type="button" id="btn-abrir-reiniciar" class="btn btn-peligro btn-encabezado">
-          Reiniciar
+        <button type="button" id="btn-abrir-reiniciar" class="btn btn-secundario btn-encabezado">
+          Reiniciar jornada
+        </button>
+        <button type="button" id="btn-abrir-eliminar" class="btn btn-peligro btn-encabezado">
+          Eliminar todos los datos
         </button>
       </div>
     </header>
@@ -167,8 +170,24 @@
     </form>
   </dialog>
 
+  <!-- Ventana de confirmación para eliminar todos los datos de la base de datos -->
+  <dialog id="modal-eliminar" class="modal modal-error" aria-labelledby="modal-eliminar-titulo">
+    <h2 id="modal-eliminar-titulo" class="modal-titulo">Eliminar todos los datos</h2>
+    <p>
+      Esta acción borrará permanentemente <strong>todos los turnos registrados</strong> (incluidos días anteriores) y dejará las 7 ventanillas cerradas con el tiempo activo en cero.
+    </p>
+    <div class="modal-opciones">
+      <button type="button" id="btn-confirmar-eliminar" class="btn btn-peligro">
+        Sí, eliminar todos los datos
+      </button>
+    </div>
+    <form method="dialog" class="modal-acciones">
+      <button type="submit" class="btn btn-secundario" autofocus>Cancelar</button>
+    </form>
+  </dialog>
+
   <dialog id="modal-error" class="modal modal-error" aria-labelledby="modal-error-titulo">
-    <h2 id="modal-error-titulo" class="modal-titulo">No se pudo reiniciar</h2>
+    <h2 id="modal-error-titulo" class="modal-titulo">No se pudo completar la operación</h2>
     <p id="modal-error-mensaje"></p>
     <form method="dialog" class="modal-acciones">
       <button type="submit" class="btn btn-primario" autofocus>Aceptar</button>
@@ -204,6 +223,9 @@
     const modalReiniciar = document.getElementById('modal-reiniciar');
     const btnReiniciarVentanillas = document.getElementById('btn-reiniciar-ventanillas');
     const btnReiniciarTodo = document.getElementById('btn-reiniciar-todo');
+    const btnAbrirEliminar = document.getElementById('btn-abrir-eliminar');
+    const modalEliminar = document.getElementById('modal-eliminar');
+    const btnConfirmarEliminar = document.getElementById('btn-confirmar-eliminar');
     const modalError = document.getElementById('modal-error');
     const modalErrorMensaje = document.getElementById('modal-error-mensaje');
 
@@ -495,16 +517,19 @@
       }
     }
 
-    async function ejecutarReinicio(limpiarTurnosHoy) {
+    async function ejecutarReinicio({ limpiarTurnosHoy = false, eliminarTodo = false } = {}) {
       btnReiniciarVentanillas.disabled = true;
       btnReiniciarTodo.disabled = true;
+      btnConfirmarEliminar.disabled = true;
 
       try {
-        await UI.enviarDatos('/api/jornada/reiniciar', { limpiarTurnosHoy });
+        await UI.enviarDatos('/api/jornada/reiniciar', { limpiarTurnosHoy, eliminarTodo });
         if (modalReiniciar.open) modalReiniciar.close();
+        if (modalEliminar.open) modalEliminar.close();
         await recargarEstado();
       } catch (error) {
         if (modalReiniciar.open) modalReiniciar.close();
+        if (modalEliminar.open) modalEliminar.close();
         UI.mostrarAviso(
           modalError,
           modalErrorMensaje,
@@ -513,6 +538,7 @@
       } finally {
         btnReiniciarVentanillas.disabled = false;
         btnReiniciarTodo.disabled = false;
+        btnConfirmarEliminar.disabled = false;
       }
     }
 
@@ -534,8 +560,18 @@
     btnAbrirReiniciar.addEventListener('click', () => {
       if (!modalReiniciar.open) modalReiniciar.showModal();
     });
-    btnReiniciarVentanillas.addEventListener('click', () => ejecutarReinicio(false));
-    btnReiniciarTodo.addEventListener('click', () => ejecutarReinicio(true));
+    btnReiniciarVentanillas.addEventListener('click', () =>
+      ejecutarReinicio({ limpiarTurnosHoy: false, eliminarTodo: false })
+    );
+    btnReiniciarTodo.addEventListener('click', () =>
+      ejecutarReinicio({ limpiarTurnosHoy: true, eliminarTodo: false })
+    );
+    btnAbrirEliminar.addEventListener('click', () => {
+      if (!modalEliminar.open) modalEliminar.showModal();
+    });
+    btnConfirmarEliminar.addEventListener('click', () =>
+      ejecutarReinicio({ limpiarTurnosHoy: true, eliminarTodo: true })
+    );
 
     recargarEstado();
     UI.conectarEnVivo({

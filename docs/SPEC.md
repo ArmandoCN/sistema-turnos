@@ -98,7 +98,7 @@ Implementar una arquitectura ligera y sin sobreingeniería permite resolver el c
 
 * **RF-11 Indicadores de tiempos y totales:** Mostrar tiempo promedio de espera, tiempo promedio de atención, turnos emitidos hoy, turnos en espera / en atención y total de turnos cerrados.  
 * **RF-12 Productividad por hora y motivos:** Mostrar una serie horaria continua desde la primera hasta la última atención del día (incluyendo horas intermedias en cero) y el conteo y porcentaje exacto de los 4 motivos de cierre, ocultando las gráficas cuando existan 0 registros y degradando a barras HTML locales si Chart.js no está accesible.  
-* **RF-13 Rendimiento por ventanilla y reinicio:** Mostrar por cada una de las 7 ventanillas sus turnos cerrados, atendidos y tiempo total activo neto (descontando pausas, incrementado en vivo cada segundo cuando está activa), además de un botón `"Reiniciar"` en el encabezado para restablecer únicamente ventanillas o reiniciar también los turnos de prueba del día actual.
+* **RF-13 Rendimiento por ventanilla, reinicio y eliminación de datos:** Mostrar por cada una de las 7 ventanillas sus turnos cerrados, atendidos y tiempo total activo neto (descontando pausas, incrementado en vivo cada segundo cuando está activa), además de los botones `"Reiniciar jornada"` (para restablecer solo ventanillas o los turnos del día) y `"Eliminar todos los datos"` (para borrar todos los turnos de la base de datos y dejar el sistema en cero).
 
 ## **Núcleo y Sincronización**
 
@@ -149,7 +149,7 @@ Implementar una arquitectura ligera y sin sobreingeniería permite resolver el c
 * **`GET /api/estado`:** Devuelve el snapshot completo de `fecha_jornada` (`ahora`, `fechaServidor`, `ventanillas` con `segundosActivos` y `turnoActual`, `turnosAtendiendo`, `filasEspera`, `proximosEspera`, `tiemposEstimados` y `metricas` del día).  
 * **`GET /api/eventos`:** Canal abierto SSE (`text/event-stream`) con snapshot inicial (`conexion_inicial`), heartbeat cada 25 segundos y notificaciones instantáneas ante cualquier mutación.  
 * **`POST /api/jornada/cerrar`:** Ejecuta manualmente o vía cron la rutina de cierre de las 18:00 hrs (cierra ventanillas consolidando `segundos_activos` y cierra turnos residuales del día como `'no_atendido'`).  
-* **`POST /api/jornada/reiniciar`:** Recibe `{ limpiarTurnosHoy }` (booleano opcional). Pone las 7 ventanillas en `'cerrado'` con tiempo activo en `0`; si `limpiarTurnosHoy` es `false`, devuelve a `'espera'` cualquier turno que hubiera quedado en `'atendiendo'`; si es `true`, elimina únicamente los turnos de la fecha actual manteniendo intacto el historial de jornadas anteriores.
+* **`POST /api/jornada/reiniciar`:** Recibe `{ limpiarTurnosHoy, eliminarTodo }` (booleanos opcionales). Pone las 7 ventanillas en `'cerrado'` con tiempo activo en `0`; si `eliminarTodo` es `true`, borra todos los registros de la tabla `turnos` y reinicia su secuencia de IDs; si `limpiarTurnosHoy` es `true`, elimina únicamente los turnos de la fecha actual; si ambos son `false`, devuelve a `'espera'` cualquier turno que hubiera quedado en `'atendiendo'`.
 
 ## **D. Estructura de carpetas del proyecto**
 
@@ -194,6 +194,6 @@ sistema-turnos/
 
 ## **D. Hardware de Impresión (58 mm), Audio Sin Interacción y Apariencia Unificada**
 
-* **Ticket térmico Epson 58 mm (`estilos.css` + `kiosco.html`):** Las reglas `@media print` configuran `@page { size: 58mm auto; margin: 0; }`, ancho útil de `48 mm` y colores blanco y negro forzados (anulando el tema oscuro al imprimir), mostrando exclusivamente el código de turno en negrita grande y la fecha/hora (`DD/MM/YY HH:mm`). `kiosco.html` espera dos `requestAnimationFrame` antes de invocar `window.print()` y retorna al menú principal a los 3 segundos.  
+* **Ticket térmico Epson 58 mm (`estilos.css` + `kiosco.html`):** Las reglas `@media print` configuran `@page { size: 58mm auto; margin: 0; }`, ancho útil de `48 mm` y colores blanco y negro forzados (anulando el tema oscuro al imprimir), mostrando exclusivamente el código de turno en negrita grande y la fecha/hora (`DD/MM/YY HH:mm`). `kiosco.html` espera dos `requestAnimationFrame` antes de invocar `window.print()` y retorna al menú principal tras `segundosRegreso` (variable configurada en `3` segundos).  
 * **Pantalla de sala de espera sin periféricos:** Pensada para navegador en modo kiosco con `--autoplay-policy=no-user-gesture-required`; `pantalla.html` sintetiza un timbre de dos tonos (`659.25 Hz` → `880 Hz`) mediante Web Audio API al recibir un llamado nuevo por SSE y organiza los llamados en tarjeta principal destacada más sub-rejilla compacta para visualizar hasta 7 ventanillas sin scroll.  
 * **Normalización visual multi-pantalla:** Todas las vistas comparten un diseño **oscuro azulado** (`#090f1d` fondo, `#111b30` paneles, `#172542` bloques internos, `#38bdf8` y `#facc15` acentos) adaptable a pantallas horizontales, verticales y móviles desde `320 px`.

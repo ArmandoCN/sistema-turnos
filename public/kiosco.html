@@ -84,6 +84,9 @@
   <script>
     const UI = window.TurnosUI;
 
+    // Tiempo (en segundos) que permanece visible el turno en pantalla después de imprimir el ticket.
+    let segundosRegreso = 3;
+
     const pantallaSeleccion = document.getElementById('pantalla-seleccion');
     const pantallaConfirmacion = document.getElementById('pantalla-confirmacion');
     const confirmacionCodigo = document.getElementById('confirmacion-codigo');
@@ -139,7 +142,7 @@
               window.print();
             } finally {
               clearTimeout(timerRegreso);
-              timerRegreso = setTimeout(volverAInicio, 3000);
+              timerRegreso = setTimeout(volverAInicio, segundosRegreso * 1000);
             }
           });
         });

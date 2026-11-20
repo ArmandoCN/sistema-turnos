@@ -584,9 +584,10 @@ function cerrarJornadaDiaria(ahora = Date.now()) {
   return resultado;
 }
 
-// Deja las 7 ventanillas cerradas con reloj en cero. Si limpiarTurnosHoy es verdadero,
-// borra además los turnos del día actual (útil para pruebas repetidas) sin tocar días anteriores.
-function reiniciarJornada({ limpiarTurnosHoy = false } = {}) {
+// Deja las 7 ventanillas cerradas con reloj en cero.
+// - Si eliminarTodo es verdadero, borra absolutamente todos los turnos registrados en la base de datos.
+// - Si limpiarTurnosHoy es verdadero, borra solo los turnos de hoy sin tocar días anteriores.
+function reiniciarJornada({ limpiarTurnosHoy = false, eliminarTodo = false } = {}) {
   const hoy = fechaLocal();
 
   const resultado = ejecutarTransaccion(() => {
@@ -601,7 +602,11 @@ function reiniciarJornada({ limpiarTurnosHoy = false } = {}) {
     let turnosEliminados = 0;
     let turnosLiberados = 0;
 
-    if (limpiarTurnosHoy) {
+    if (eliminarTodo) {
+      turnosEliminados = db.prepare('DELETE FROM turnos;').run().changes;
+      // Reiniciamos el contador interno de IDs de SQLite para que el próximo turno vuelva a empezar en 1.
+      db.prepare("DELETE FROM sqlite_sequence WHERE name = 'turnos';").run();
+    } else if (limpiarTurnosHoy) {
       turnosEliminados = db
         .prepare('DELETE FROM turnos WHERE fecha_jornada = ?;')
         .run(hoy).changes;
@@ -609,7 +614,7 @@ function reiniciarJornada({ limpiarTurnosHoy = false } = {}) {
       turnosLiberados = liberarTurnosEnAtencion(hoy);
     }
 
-    return { ok: true, turnosEliminados, turnosLiberados };
+    return { ok: true, turnosEliminados, turnosLiberados, eliminarTodo: Boolean(eliminarTodo) };
   });
 
   cancelarTodosLosTimersInactividad();
@@ -1315,12 +1320,17 @@ app.post('/api/jornada/cerrar', (req, res) => {
   }
 });
 
-// Reinicia las ventanillas a cero desde el dashboard (y opcionalmente los turnos de prueba de hoy).
+// Reinicia las ventanillas a cero desde el dashboard, limpia los turnos de hoy o elimina todos los datos.
 app.post('/api/jornada/reiniciar', (req, res) => {
-  const { limpiarTurnosHoy } = req.body || {};
+  const { limpiarTurnosHoy, eliminarTodo } = req.body || {};
 
   try {
-    return res.json(reiniciarJornada({ limpiarTurnosHoy: Boolean(limpiarTurnosHoy) }));
+    return res.json(
+      reiniciarJornada({
+        limpiarTurnosHoy: Boolean(limpiarTurnosHoy),
+        eliminarTodo: Boolean(eliminarTodo)
+      })
+    );
   } catch (error) {
     console.error('[POST /api/jornada/reiniciar]', error);
     return res.status(500).json({ error: 'No se pudo reiniciar la jornada' });
