@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="es">
+<!--
+===============================================================================
+Archivo: public/ventanilla.html (Paso 6 — Panel Operativo de Ventanilla)
+-------------------------------------------------------------------------------
+Propósito general:
+  Interfaz operativa para cajeros, ejecutivos y asesores de atención sin
+  inicio de sesión ni contraseñas:
+    1. Selector de las 7 ventanillas fijas (bloqueando visualmente las que
+       ya están en uso o en pausa y mostrando modal de error ante HTTP 409).
+    2. Persistencia en localStorage y recuperación automática tras recarga
+       consultando GET /api/estado.
+    3. Gestión de atención: auto-asignación y llamado FIFO, cierre obligatorio
+       con uno de los 4 motivos ("Cerrar y llamar siguiente" / "Cerrar y pausar"),
+       "Volver de pausa" y "Cerrar ventanilla". Sin botón de rellamado.
+    4. Sincronización en tiempo real vía Server-Sent Events (GET /api/eventos)
+       y cronómetro de tiempo activo descontando pausas.
+
+Dependencias con otros módulos:
+  - /estilos.css: estilos responsivos, selector :has(:checked) y modal <dialog>.
+  - GET /api/estado y GET /api/eventos (SSE).
+  - POST /api/ventanillas/abrir, /api/ventanillas/llamar,
+    /api/ventanillas/estado y /api/turnos/cerrar.
+===============================================================================
+-->
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Panel de Ventanilla — Sistema de Turnos</title>
+  <link rel="stylesheet" href="/estilos.css">
+</head>
+<body class="vista-ventanilla">
+  <div class="contenedor">
+    <header class="encabezado-vista">
+      <div>
+        <h1 class="encabezado-titulo">Panel de Ventanilla</h1>
+        <p id="subtitulo-vista" class="encabezado-subtitulo">Seleccione su ventanilla para iniciar operaciones</p>
+      </div>
+      <div class="encabezado-meta">
+        <span id="estado-sse" class="estado-sse" aria-live="polite">
+          <span class="indicador-punto" aria-hidden="true"></span>
+          <span id="texto-sse">Conectando...</span>
+        </span>
+        <span id="reloj-servidor" class="reloj-servidor" aria-label="Fecha y hora del servidor">--/--/-- --:--</span>
+      </div>
+    </header>
+
+    <main>
+      <!-- Vista 1: Selector de las 7 ventanillas disponibles/ocupadas -->
+      <section id="vista-selector" aria-labelledby="titulo-selector">
+        <div class="tarjeta">
+          <h2 id="titulo-selector" class="tarjeta-titulo">Ventanillas disponibles</h2>
+          <p class="encabezado-subtitulo">
+            El servicio que atiende queda determinado por el número de ventanilla elegido.
+          </p>
+          <div id="grid-ventanillas" class="grid-ventanillas"></div>
+        </div>
+      </section>
+
+      <!-- Vista 2: Panel operativo de la ventanilla activa o en pausa -->
+      <section id="vista-operacion" class="oculto" aria-labelledby="operacion-nombre">
+        <div class="ventanilla-panel-grid">
+          <!-- Columna izquierda principal: Turno en curso y botones grandes de estado -->
+          <article class="tarjeta ventanilla-tarjeta-principal" aria-live="polite">
+            <div class="ventanilla-atencion-cabecera">
+              <h3 class="tarjeta-titulo">Atención Actual</h3>
+              <p id="turno-tiempos" class="encabezado-subtitulo"></p>
+            </div>
+
+            <!-- Bloque cuando SÍ existe un turno asignado en estado 'atendiendo' -->
+            <div id="bloque-con-turno" class="oculto">
+              <div class="turno-actual-resumen">
+                <span class="encabezado-subtitulo">Turno asignado</span>
+                <p id="turno-codigo" class="turno-actual-codigo">---</p>
+              </div>
+
+              <!-- 4 botones directos de cierre con llamado inmediato al siguiente (sin rellamado) -->
+              <p class="tarjeta-titulo ventanilla-subtitulo-cierre">Finalizar turno y llamar siguiente:</p>
+              <div class="grupo-botones-cierre">
+                <button type="button" class="btn btn-exito" data-resultado-siguiente="atendido">
+                  Atendido
+                </button>
+                <button type="button" class="btn btn-alerta" data-resultado-siguiente="no_atendido">
+                  No atendido
+                </button>
+                <button type="button" class="btn btn-peligro" data-resultado-siguiente="no_aparecio">
+                  No apareció
+                </button>
+                <button type="button" class="btn btn-neutro" data-resultado-siguiente="turno_equivocado">
+                  Turno equivocado
+                </button>
+              </div>
+
+              <!-- Opción para pausar: al presionarlo pregunta el motivo de cierre -->
+              <div class="acciones-ventanilla separador-pausa">
+                <button type="button" id="btn-cerrar-pausar" class="btn btn-secundario">
+                  Cerrar y pausar...
+                </button>
+              </div>
+            </div>
+
+            <!-- Bloque cuando la ventanilla está activa pero sin cliente asignado -->
+            <div id="bloque-sin-turno" class="oculto">
+              <p id="texto-estado-libre" class="encabezado-subtitulo">
+                Ventanilla libre en espera de cliente. El próximo turno del servicio se asignará automáticamente.
+              </p>
+              <div class="acciones-ventanilla">
+                <button type="button" id="btn-llamar-siguiente" class="btn btn-primario">
+                  Llamar siguiente
+                </button>
+                <button type="button" id="btn-volver-pausa" class="btn btn-exito oculto">
+                  Volver de pausa
+                </button>
+                <button type="button" id="btn-cerrar-ventanilla" class="btn btn-peligro">
+                  Cerrar ventanilla
+                </button>
+              </div>
+            </div>
+          </article>
+
+          <!-- Columna derecha lateral: Info de ventanilla + tiempo activo y próximos en fila -->
+          <div class="ventanilla-columna-lateral">
+            <!-- Caja con datos de la ventanilla, estado, cola y cronómetro activo -->
+            <article class="tarjeta ventanilla-barra-operativa">
+              <div>
+                <h2 id="operacion-nombre" class="tarjeta-titulo">Ventanilla</h2>
+                <div class="encabezado-meta">
+                  <span id="operacion-servicio-badge" class="badge">Servicio</span>
+                  <span id="operacion-estado-badge" class="badge">Estado</span>
+                  <span id="operacion-cola" class="encabezado-subtitulo">0 en espera</span>
+                </div>
+              </div>
+
+              <div class="ventanilla-tiempo-caja">
+                <p class="encabezado-subtitulo">Tiempo activo hoy (sin pausas)</p>
+                <p id="operacion-cronometro" class="ventanilla-cronometro">00:00:00</p>
+              </div>
+            </article>
+
+            <!-- Tarjeta secundaria: próximos turnos en espera de su mismo servicio -->
+            <article class="tarjeta ventanilla-tarjeta-fila">
+              <h3 class="tarjeta-titulo">Próximos en Fila de su Servicio</h3>
+              <p id="fila-vacia-texto" class="encabezado-subtitulo">No hay turnos en espera en este momento.</p>
+              <div class="tabla-envoltorio ventanilla-tabla-scroll">
+                <table id="tabla-fila-servicio" class="tabla-datos oculto">
+                  <thead>
+                    <tr>
+                      <th scope="col">Turno</th>
+                      <th scope="col">Hora de llegada</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tbody-fila-servicio"></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Modal para elegir el motivo de cierre al presionar "Cerrar y pausar" -->
+  <dialog id="modal-pausa" class="modal-dialogo" aria-labelledby="modal-pausa-titulo">
+    <h2 id="modal-pausa-titulo" class="modal-dialogo-titulo">Cerrar turno y pausar</h2>
+    <p class="modal-error-texto">
+      Seleccione el resultado del turno <strong id="modal-pausa-codigo">---</strong> antes de pasar la ventanilla a pausa:
+    </p>
+    <div class="modal-opciones-cierre">
+      <button type="button" class="btn btn-exito" data-resultado-pausar="atendido">
+        Atendido
+      </button>
+      <button type="button" class="btn btn-alerta" data-resultado-pausar="no_atendido">
+        No atendido
+      </button>
+      <button type="button" class="btn btn-peligro" data-resultado-pausar="no_aparecio">
+        No apareció
+      </button>
+      <button type="button" class="btn btn-neutro" data-resultado-pausar="turno_equivocado">
+        Turno equivocado
+      </button>
+    </div>
+    <form method="dialog" class="modal-error-acciones">
+      <button type="submit" class="btn btn-secundario" autofocus>Cancelar</button>
+    </form>
+  </dialog>
+
+  <!-- Modal nativo accesible para mostrar errores HTTP 409 o fallos de operación -->
+  <dialog id="modal-error" class="modal-error" aria-labelledby="modal-error-titulo">
+    <h2 id="modal-error-titulo" class="modal-error-titulo">Aviso de Operación</h2>
+    <p id="modal-error-mensaje" class="modal-error-texto"></p>
+    <form method="dialog" class="modal-error-acciones">
+      <button type="submit" class="btn btn-primario" autofocus>Aceptar</button>
+    </form>
+  </dialog>
+
+  <script>
+    /**
+     * Lógica del Panel de Ventanilla (Vanilla ES6+ sin dependencias).
+     * Flujo principal:
+     *   - Recupera la sesión desde localStorage y la contrasta con GET /api/estado.
+     *   - Mantiene sincronización en tiempo real mediante EventSource (/api/eventos).
+     *   - Bloquea ventanillas en uso y muestra popup <dialog> ante errores (ej. HTTP 409).
+     *   - Gestiona llamado, cierre obligatorio con 4 motivos, pausa, reanudación y cierre.
+     */
+    (function inicializarVentanilla() {
+      // Clave única en localStorage para recordar qué ventanilla opera este equipo.
+      const CLAVE_STORAGE = 'turnos_ventanilla_seleccionada';
+
+      const NOMBRES_SERVICIO = {
+        caja: 'Caja',
+        ejecutivo: 'Ejecutivo',
+        atencion: 'Atención a Cliente'
+      };
+
+      const ETIQUETAS_ESTADO = {
+        activo: 'Activa',
+        pausa: 'En pausa',
+        cerrado: 'Cerrada'
+      };
+
+      // Referencias del DOM.
+      const subtituloVista = document.getElementById('subtitulo-vista');
+      const estadoSSE = document.getElementById('estado-sse');
+      const textoSSE = document.getElementById('texto-sse');
+      const relojServidor = document.getElementById('reloj-servidor');
+
+      const vistaSelector = document.getElementById('vista-selector');
+      const gridVentanillas = document.getElementById('grid-ventanillas');
+
+      const vistaOperacion = document.getElementById('vista-operacion');
+      const operacionNombre = document.getElementById('operacion-nombre');
+      const operacionServicioBadge = document.getElementById('operacion-servicio-badge');
+      const operacionEstadoBadge = document.getElementById('operacion-estado-badge');
+      const operacionCola = document.getElementById('operacion-cola');
+      const operacionCronometro = document.getElementById('operacion-cronometro');
+
+      const bloqueConTurno = document.getElementById('bloque-con-turno');
+      const turnoCodigo = document.getElementById('turno-codigo');
+      const turnoTiempos = document.getElementById('turno-tiempos');
+      const botonesCerrarSiguiente = document.querySelectorAll('[data-resultado-siguiente]');
+      const btnCerrarPausar = document.getElementById('btn-cerrar-pausar');
+
+      const modalPausa = document.getElementById('modal-pausa');
+      const modalPausaCodigo = document.getElementById('modal-pausa-codigo');
+      const botonesCerrarPausar = document.querySelectorAll('[data-resultado-pausar]');
+
+      const bloqueSinTurno = document.getElementById('bloque-sin-turno');
+      const textoEstadoLibre = document.getElementById('texto-estado-libre');
+      const btnLlamarSiguiente = document.getElementById('btn-llamar-siguiente');
+      const btnVolverPausa = document.getElementById('btn-volver-pausa');
+      const btnCerrarVentanilla = document.getElementById('btn-cerrar-ventanilla');
+
+      const filaVaciaTexto = document.getElementById('fila-vacia-texto');
+      const tablaFilaServicio = document.getElementById('tabla-fila-servicio');
+      const tbodyFilaServicio = document.getElementById('tbody-fila-servicio');
+
+      const modalError = document.getElementById('modal-error');
+      const modalErrorMensaje = document.getElementById('modal-error-mensaje');
+
+      // Estado local sincronizado con el servidor.
+      let ventanillaActual = localStorage.getItem(CLAVE_STORAGE) || null;
+      let turnoActualId = null;
+      let turnoActualCodigo = '';
+      let desfaseServidorMs = 0;
+      let baseSegundosActivos = 0;
+      let marcaSyncSegundosMs = Date.now();
+      let ventanillaEstaActiva = false;
+      let peticionEnCurso = false;
+      let fuenteEventos = null;
+
+      /**
+       * Formatea una marca en milisegundos como DD/MM/YY HH:mm sin zonas horarias.
+       *
+       * @param {number} ms - Milisegundos del servidor.
+       * @returns {string} Fecha y hora en formato DD/MM/YY HH:mm.
+       */
+      function formatearFechaHora(ms) {
+        if (!ms) return '--/--/-- --:--';
+        return new Date(ms)
+          .toLocaleString('es-MX', {
+            dateStyle: 'short',
+            timeStyle: 'short',
+            hour12: false
+          })
+          .replace(',', '');
+      }
+
+      /**
+       * Convierte una cantidad entera de segundos a formato HH:MM:SS.
+       *
+       * @param {number} totalSegundos - Segundos acumulados.
+       * @returns {string} Cadena HH:MM:SS.
+       */
+      function formatearDuracion(totalSegundos) {
+        const segs = Math.max(0, Math.floor(totalSegundos || 0));
+        const horas = String(Math.floor(segs / 3600)).padStart(2, '0');
+        const minutos = String(Math.floor((segs % 3600) / 60)).padStart(2, '0');
+        const segundos = String(segs % 60).padStart(2, '0');
+        return `${horas}:${minutos}:${segundos}`;
+      }
+
+      /**
+       * Actualiza el reloj del encabezado y el cronómetro en vivo de la ventanilla.
+       */
+      function actualizarRelojYCronometro() {
+        relojServidor.textContent = formatearFechaHora(Date.now() + desfaseServidorMs);
+
+        if (ventanillaActual) {
+          const transcurridoDesdeSync = ventanillaEstaActiva
+            ? Math.max(0, Math.floor((Date.now() - marcaSyncSegundosMs) / 1000))
+            : 0;
+          operacionCronometro.textContent = formatearDuracion(
+            baseSegundosActivos + transcurridoDesdeSync
+          );
+        }
+      }
+
+      /**
+       * Abre el popup modal nativo (<dialog>) con la descripción del error recibido.
+       *
+       * @param {string} mensaje - Mensaje legible devuelto por el servidor o validación.
+       */
+      function mostrarPopupError(mensaje) {
+        modalErrorMensaje.textContent = mensaje;
+        if (!modalError.open) {
+          modalError.showModal();
+        }
+      }
+
+      /**
+       * Helper reutilizable para enviar peticiones POST JSON y capturar errores HTTP
+       * (como 409 Conflict cuando otra persona ya abrió la misma ventanilla).
+       *
+       * @param {string} url - Endpoint REST a invocar.
+       * @param {object} cuerpo - Payload JSON.
+       * @returns {Promise<object|null>} Respuesta JSON si fue exitosa, o null si falló.
+       */
+      async function enviarPeticion(url, cuerpo) {
+        if (peticionEnCurso) return null;
+        peticionEnCurso = true;
+
+        try {
+          const respuesta = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cuerpo)
+          });
+
+          const datos = await respuesta.json().catch(() => ({}));
+          if (!respuesta.ok) {
+            throw new Error(datos.error || `Error del servidor (HTTP ${respuesta.status}).`);
+          }
+          return datos;
+        } catch (error) {
+          mostrarPopupError(error.message || 'No se pudo completar la operación.');
+          return null;
+        } finally {
+          peticionEnCurso = false;
+        }
+      }
+
+      /**
+       * Dibuja las 7 tarjetas del selector de ventanillas bloqueando visualmente
+       * las que estén en estado 'activo' o 'pausa'.
+       *
+       * @param {Array<object>} ventanillas - Lista ordenada de las 7 ventanillas.
+       */
+      function renderizarSelector(ventanillas) {
+        const botonesPorNombre = new Map();
+        for (const btn of gridVentanillas.querySelectorAll('button[data-ventanilla]')) {
+          botonesPorNombre.set(btn.dataset.ventanilla, btn);
+        }
+
+        // Si cambió el conjunto de ventanillas (primera carga), creamos las 7 tarjetas.
+        if (botonesPorNombre.size !== ventanillas.length) {
+          gridVentanillas.textContent = '';
+          botonesPorNombre.clear();
+        }
+
+        for (const v of ventanillas) {
+          const ocupada = v.estado !== 'cerrado';
+          let boton = botonesPorNombre.get(v.ventanilla);
+
+          if (!boton) {
+            boton = document.createElement('button');
+            boton.type = 'button';
+            boton.className = 'tarjeta-ventanilla-opcion';
+            boton.dataset.ventanilla = v.ventanilla;
+
+            const nombre = document.createElement('span');
+            nombre.className = 'ventanilla-nombre';
+            nombre.textContent = v.ventanilla;
+
+            const servicio = document.createElement('span');
+            servicio.className = `badge badge--${v.tipo_servicio}`;
+            servicio.textContent = NOMBRES_SERVICIO[v.tipo_servicio] || v.tipo_servicio;
+
+            const estado = document.createElement('span');
+            estado.dataset.rol = 'estado';
+
+            boton.append(nombre, servicio, estado);
+            boton.addEventListener('click', () => abrirVentanilla(v.ventanilla));
+            gridVentanillas.appendChild(boton);
+          }
+
+          boton.disabled = ocupada;
+          const badgeEstado = boton.querySelector('[data-rol="estado"]');
+          if (badgeEstado) {
+            badgeEstado.className = `badge badge--${v.estado}`;
+            badgeEstado.textContent = ocupada
+              ? `${ETIQUETAS_ESTADO[v.estado] || v.estado} (En uso)`
+              : 'Disponible';
+          }
+        }
+      }
+
+      /**
+       * Renderiza la tabla FIFO de turnos en espera correspondientes al servicio
+       * de la ventanilla activa.
+       *
+       * @param {Array<object>} listaEspera - Turnos en espera del mismo servicio.
+       */
+      function renderizarFilaServicio(listaEspera) {
+        tbodyFilaServicio.textContent = '';
+
+        if (!listaEspera || listaEspera.length === 0) {
+          filaVaciaTexto.classList.remove('oculto');
+          tablaFilaServicio.classList.add('oculto');
+          return;
+        }
+
+        filaVaciaTexto.classList.add('oculto');
+        tablaFilaServicio.classList.remove('oculto');
+
+        for (const turno of listaEspera) {
+          const fila = document.createElement('tr');
+          const celdaCodigo = document.createElement('td');
+          celdaCodigo.textContent = turno.codigo;
+          const celdaHora = document.createElement('td');
+          celdaHora.textContent = formatearFechaHora(turno.hora_creacion);
+          fila.append(celdaCodigo, celdaHora);
+          tbodyFilaServicio.appendChild(fila);
+        }
+      }
+
+      /**
+       * Aplica un snapshot completo del servidor a la interfaz de ventanilla:
+       *   - Si hay una ventanilla en localStorage y sigue 'activo' o 'pausa',
+       *     muestra/actualiza su panel operativo y turno actual.
+       *   - Si en el servidor aparece 'cerrado' (cierre manual, corte 18:00 o
+       *     inactividad de 2 horas), limpia localStorage y muestra el selector.
+       *
+       * @param {object} estado - Objeto retornado por GET /api/estado o SSE.
+       */
+      function aplicarEstado(estado) {
+        if (!estado || !Array.isArray(estado.ventanillas)) return;
+
+        if (typeof estado.ahora === 'number') {
+          desfaseServidorMs = estado.ahora - Date.now();
+        }
+
+        const seleccionada = ventanillaActual
+          ? estado.ventanillas.find((v) => v.ventanilla === ventanillaActual)
+          : null;
+
+        // Validar recuperación de sesión: si fue cerrada en servidor, limpiar localStorage.
+        if (!seleccionada || seleccionada.estado === 'cerrado') {
+          if (modalPausa.open) {
+            modalPausa.close();
+          }
+          if (ventanillaActual) {
+            ventanillaActual = null;
+            localStorage.removeItem(CLAVE_STORAGE);
+          }
+          turnoActualId = null;
+          turnoActualCodigo = '';
+          ventanillaEstaActiva = false;
+          baseSegundosActivos = 0;
+
+          subtituloVista.textContent = 'Seleccione su ventanilla para iniciar operaciones';
+          vistaOperacion.classList.add('oculto');
+          vistaSelector.classList.remove('oculto');
+          renderizarSelector(estado.ventanillas);
+          actualizarRelojYCronometro();
+          return;
+        }
+
+        // Sesión válida ('activo' o 'pausa'): restaurar o actualizar panel operativo.
+        vistaSelector.classList.add('oculto');
+        vistaOperacion.classList.remove('oculto');
+
+        const nombreServicio = NOMBRES_SERVICIO[seleccionada.tipo_servicio] || seleccionada.tipo_servicio;
+        subtituloVista.textContent = `Operando ${seleccionada.ventanilla} — Servicio ${nombreServicio}`;
+
+        operacionNombre.textContent = seleccionada.ventanilla;
+        operacionServicioBadge.className = `badge badge--${seleccionada.tipo_servicio}`;
+        operacionServicioBadge.textContent = nombreServicio;
+        operacionEstadoBadge.className = `badge badge--${seleccionada.estado}`;
+        operacionEstadoBadge.textContent = ETIQUETAS_ESTADO[seleccionada.estado] || seleccionada.estado;
+
+        // Actualizar base del cronómetro con el acumulado real devuelto por el servidor.
+        baseSegundosActivos = seleccionada.segundosActivos || 0;
+        marcaSyncSegundosMs = Date.now();
+        ventanillaEstaActiva = seleccionada.estado === 'activo';
+
+        const colaServicio =
+          (estado.filasEspera && estado.filasEspera[seleccionada.tipo_servicio]) || [];
+        operacionCola.textContent = `${colaServicio.length} en espera`;
+        renderizarFilaServicio(colaServicio);
+
+        const turno = seleccionada.turnoActual;
+        if (turno && seleccionada.estado === 'activo') {
+          turnoActualId = turno.id;
+          turnoActualCodigo = turno.codigo;
+
+          turnoCodigo.textContent = turno.codigo;
+          turnoTiempos.textContent = `Llegada: ${formatearFechaHora(
+            turno.hora_creacion
+          )} • Llamado: ${formatearFechaHora(turno.hora_llamado)}`;
+
+          bloqueConTurno.classList.remove('oculto');
+          bloqueSinTurno.classList.add('oculto');
+        } else {
+          if (modalPausa.open) {
+            modalPausa.close();
+          }
+          turnoActualId = null;
+          turnoActualCodigo = '';
+          turnoTiempos.textContent = '';
+          bloqueConTurno.classList.add('oculto');
+          bloqueSinTurno.classList.remove('oculto');
+
+          const enPausa = seleccionada.estado === 'pausa';
+          btnLlamarSiguiente.classList.toggle('oculto', enPausa);
+          btnLlamarSiguiente.disabled = colaServicio.length === 0;
+          btnVolverPausa.classList.toggle('oculto', !enPausa);
+          textoEstadoLibre.textContent = enPausa
+            ? 'Ventanilla en pausa. El contador de tiempo activo está detenido.'
+            : colaServicio.length > 0
+              ? 'Hay turnos en espera listos para atención.'
+              : 'Ventanilla libre en espera de cliente. El próximo turno se asignará automáticamente.';
+        }
+
+        actualizarRelojYCronometro();
+      }
+
+      /**
+       * Consulta el estado actual al servidor (usado al cargar, tras errores o al cerrar popup).
+       */
+      async function cargarEstadoInicial() {
+        try {
+          const respuesta = await fetch('/api/estado');
+          if (!respuesta.ok) return;
+          const estado = await respuesta.json();
+          aplicarEstado(estado);
+        } catch (_) {
+          mostrarPopupError('No se pudo conectar con el servidor para obtener el estado actual.');
+        }
+      }
+
+      /**
+       * Intenta abrir la ventanilla elegida enviando POST /api/ventanillas/abrir.
+       * Si otro operador la ganó (HTTP 409), muestra el popup con el mensaje exacto.
+       *
+       * @param {string} nombreVentanilla - Nombre exacto de la ventanilla.
+       */
+      async function abrirVentanilla(nombreVentanilla) {
+        const datos = await enviarPeticion('/api/ventanillas/abrir', {
+          ventanilla: nombreVentanilla
+        });
+
+        if (!datos) {
+          cargarEstadoInicial();
+          return;
+        }
+
+        ventanillaActual = nombreVentanilla;
+        localStorage.setItem(CLAVE_STORAGE, nombreVentanilla);
+        await cargarEstadoInicial();
+      }
+
+      /**
+       * Cierra el turno en curso con el motivo seleccionado directamente en botón
+       * o elegido en el modal de pausa.
+       *
+       * @param {'atendido'|'no_atendido'|'no_aparecio'|'turno_equivocado'} resultado - Motivo de cierre.
+       * @param {boolean} pausar - true para "Cerrar y pausar", false para "Cerrar y llamar siguiente".
+       */
+      async function cerrarTurnoActual(resultado, pausar) {
+        if (!ventanillaActual || !turnoActualId || !resultado) return;
+
+        const datos = await enviarPeticion('/api/turnos/cerrar', {
+          turno_id: turnoActualId,
+          ventanilla: ventanillaActual,
+          resultado,
+          pausar
+        });
+
+        if (datos) {
+          await cargarEstadoInicial();
+        }
+      }
+
+      /**
+       * Llama manualmente al siguiente turno en espera cuando la ventanilla está libre.
+       */
+      async function llamarSiguiente() {
+        if (!ventanillaActual) return;
+        const datos = await enviarPeticion('/api/ventanillas/llamar', {
+          ventanilla: ventanillaActual
+        });
+        if (datos) {
+          await cargarEstadoInicial();
+        }
+      }
+
+      /**
+       * Cambia el estado de la ventanilla actual ('reanudar' o 'cerrar').
+       *
+       * @param {'reanudar'|'cerrar'} accion - Acción solicitada.
+       */
+      async function cambiarEstadoVentanilla(accion) {
+        if (!ventanillaActual) return;
+        const datos = await enviarPeticion('/api/ventanillas/estado', {
+          ventanilla: ventanillaActual,
+          accion
+        });
+
+        if (datos) {
+          if (accion === 'cerrar') {
+            ventanillaActual = null;
+            localStorage.removeItem(CLAVE_STORAGE);
+          }
+          await cargarEstadoInicial();
+        }
+      }
+
+      /**
+       * Conecta el canal SSE (/api/eventos) para reflejar en < 1 s turnos nuevos,
+       * bloqueos de otras ventanillas, cierres de las 18:00 o timeouts de 2 horas.
+       */
+      function conectarSSE() {
+        if (fuenteEventos) {
+          fuenteEventos.close();
+        }
+
+        fuenteEventos = new EventSource('/api/eventos');
+
+        fuenteEventos.onopen = () => {
+          estadoSSE.className = 'estado-sse estado-sse--conectado';
+          textoSSE.textContent = 'En vivo';
+        };
+
+        fuenteEventos.onmessage = (evento) => {
+          try {
+            const payload = JSON.parse(evento.data);
+            if (payload && payload.estado) {
+              aplicarEstado(payload.estado);
+            }
+          } catch (_) {
+            // Ignora líneas malformadas en el stream sin cerrar la suscripción.
+          }
+        };
+
+        fuenteEventos.onerror = () => {
+          estadoSSE.className = 'estado-sse estado-sse--error';
+          textoSSE.textContent = 'Reconectando...';
+        };
+      }
+
+      // Cada botón de motivo cierra inmediatamente el turno y llama al siguiente (pausar: false).
+      for (const boton of botonesCerrarSiguiente) {
+        boton.addEventListener('click', () => {
+          const resultado = boton.getAttribute('data-resultado-siguiente');
+          cerrarTurnoActual(resultado, false);
+        });
+      }
+
+      // "Cerrar y pausar" abre el modal preguntando el motivo antes de pausar.
+      btnCerrarPausar.addEventListener('click', () => {
+        if (!turnoActualId) return;
+        modalPausaCodigo.textContent = turnoActualCodigo || '---';
+        if (!modalPausa.open) {
+          modalPausa.showModal();
+        }
+      });
+
+      // Al elegir un motivo dentro del modal de pausa, cierra el turno y pasa a pausa.
+      for (const boton of botonesCerrarPausar) {
+        boton.addEventListener('click', () => {
+          const resultado = boton.getAttribute('data-resultado-pausar');
+          if (modalPausa.open) {
+            modalPausa.close();
+          }
+          cerrarTurnoActual(resultado, true);
+        });
+      }
+
+      btnLlamarSiguiente.addEventListener('click', llamarSiguiente);
+      btnVolverPausa.addEventListener('click', () => cambiarEstadoVentanilla('reanudar'));
+      btnCerrarVentanilla.addEventListener('click', () => cambiarEstadoVentanilla('cerrar'));
+
+      // Al cerrar el popup de error, refrescamos el estado por si otra ventanilla cambió.
+      modalError.addEventListener('close', () => {
+        cargarEstadoInicial();
+      });
+
+      // Inicio del módulo: cargar estado inicial (recupera localStorage si sigue abierto),
+      // suscribirse a SSE y arrancar el pulso de 1 segundo para el cronómetro activo.
+      cargarEstadoInicial();
+      conectarSSE();
+      setInterval(actualizarRelojYCronometro, 1000);
+    })();
+  </script>
+</body>
+</html>

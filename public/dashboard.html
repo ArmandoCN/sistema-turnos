@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="es">
+<!--
+===============================================================================
+Archivo: public/dashboard.html (Paso 8 — Dashboard Estadístico en Tiempo Real)
+-------------------------------------------------------------------------------
+Propósito general:
+  Tablero de monitoreo en tiempo real para supervisores o encargados:
+    1. KPIs diarios: tiempo promedio de espera, tiempo promedio de atención,
+       turnos totales de la jornada, en espera y cerrados.
+    2. Gráfica de clientes atendidos por hora y gráfica/porcentajes de los 4
+       motivos de cierre mediante Chart.js vía CDN.
+    3. Degradación segura offline para red LAN sin internet: Chart.js se carga
+       con 'async' para no bloquear el renderizado y, si no está disponible, se
+       despliegan automáticamente barras HTML/CSS con los mismos datos en vivo.
+    4. Tabla de rendimiento por ventanilla (turnos cerrados, atendidos y tiempo
+       activo neto descontando pausas) actualizada cada segundo y vía SSE.
+
+Dependencias con otros módulos:
+  - /estilos.css: grid de KPIs, gráficas, barras de respaldo y tabla responsiva.
+  - Chart.js CDN (cargado únicamente en esta vista).
+  - GET /api/estado y GET /api/eventos (SSE en < 1 s).
+===============================================================================
+-->
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard en Tiempo Real — Sistema de Turnos</title>
+  <link rel="stylesheet" href="/estilos.css">
+  <!-- Carga asíncrona de Chart.js para no bloquear el tablero en LAN sin internet -->
+  <script
+    id="script-chartjs"
+    src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"
+    async
+  ></script>
+</head>
+<body class="vista-dashboard">
+  <div class="contenedor">
+    <header class="encabezado-vista">
+      <div>
+        <h1 class="encabezado-titulo">Dashboard de Atención</h1>
+        <p id="subtitulo-jornada" class="encabezado-subtitulo">Indicadores operativos de la jornada actual</p>
+      </div>
+      <div class="encabezado-meta">
+        <span id="estado-sse" class="estado-sse" aria-live="polite">
+          <span class="indicador-punto" aria-hidden="true"></span>
+          <span id="texto-sse">Conectando...</span>
+        </span>
+        <span id="reloj-servidor" class="reloj-servidor" aria-label="Fecha y hora del servidor">--/--/-- --:--</span>
+        <button type="button" id="btn-abrir-reiniciar" class="btn btn-peligro btn-encabezado">
+          Reiniciar
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <!-- Sección 1: Indicadores Clave del Día (RF-11) -->
+      <section>
+        <div class="grid-kpis">
+          <article class="tarjeta tarjeta-kpi">
+            <span class="kpi-etiqueta">Promedio de Espera</span>
+            <span id="kpi-espera" class="kpi-valor">0 s</span>
+          </article>
+
+          <article class="tarjeta tarjeta-kpi">
+            <span class="kpi-etiqueta">Promedio de Atención</span>
+            <span id="kpi-atencion" class="kpi-valor">0 s</span>
+          </article>
+
+          <article class="tarjeta tarjeta-kpi">
+            <span class="kpi-etiqueta">Turnos Emitidos Hoy</span>
+            <span id="kpi-total" class="kpi-valor">0</span>
+          </article>
+
+          <article class="tarjeta tarjeta-kpi">
+            <span class="kpi-etiqueta">En Espera / Atendiendo</span>
+            <span id="kpi-activos" class="kpi-valor">0 / 0</span>
+          </article>
+
+          <article class="tarjeta tarjeta-kpi">
+            <span class="kpi-etiqueta">Turnos Cerrados</span>
+            <span id="kpi-cerrados" class="kpi-valor">0</span>
+          </article>
+        </div>
+      </section>
+
+      <!-- Sección 2: Gráficas de Productividad por Hora y Motivos de Cierre (RF-12) -->
+      <section class="grid-graficas">
+        <!-- Gráfica 1: Clientes atendidos por hora -->
+        <article class="tarjeta">
+          <h2 class="tarjeta-titulo">Clientes Atendidos por Hora</h2>
+          <p id="aviso-offline-horas" class="encabezado-subtitulo oculto">
+            Visualización local (sin conexión a CDN externo).
+          </p>
+
+          <figure>
+            <div class="contenedor-grafica">
+              <canvas id="canvas-horas" class="oculto" aria-label="Gráfica de clientes atendidos por hora"></canvas>
+              <div id="fallback-horas" class="fallback-barras">
+                <p class="encabezado-subtitulo">Sin clientes atendidos registrados hoy.</p>
+              </div>
+            </div>
+            <figcaption class="encabezado-subtitulo">
+              Conteo por hora de turnos finalizados con resultado "Atendido".
+            </figcaption>
+          </figure>
+        </article>
+
+        <!-- Gráfica 2: Desglose de los 4 motivos de cierre -->
+        <article class="tarjeta">
+          <h2 class="tarjeta-titulo">Motivos de Cierre (Conteo y Porcentaje)</h2>
+          <p id="aviso-offline-motivos" class="encabezado-subtitulo oculto">
+            Visualización local (sin conexión a CDN externo).
+          </p>
+
+          <figure>
+            <div class="contenedor-grafica">
+              <canvas id="canvas-motivos" class="oculto" aria-label="Gráfica de motivos de cierre"></canvas>
+              <div id="fallback-motivos" class="fallback-barras"></div>
+            </div>
+          </figure>
+
+          <!-- Tabla accesible complementaria con cifras exactas de los 4 motivos -->
+          <div class="tabla-envoltorio">
+            <table class="tabla-datos">
+              <thead>
+                <tr>
+                  <th scope="col">Motivo</th>
+                  <th scope="col">Cantidad</th>
+                  <th scope="col">Porcentaje</th>
+                </tr>
+              </thead>
+              <tbody id="tbody-motivos"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <!-- Sección 3: Tabla de Rendimiento por Ventanilla (RF-13) -->
+      <section class="tarjeta" aria-labelledby="titulo-rendimiento">
+        <h2 id="titulo-rendimiento" class="tarjeta-titulo">Rendimiento por Ventanilla</h2>
+        <div class="tabla-envoltorio">
+          <table class="tabla-datos">
+            <thead>
+              <tr>
+                <th scope="col">Ventanilla</th>
+                <th scope="col">Servicio</th>
+                <th scope="col">Estado</th>
+                <th scope="col">Turnos Cerrados</th>
+                <th scope="col">Atendidos</th>
+                <th scope="col">Tiempo Activo Neto</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-ventanillas"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Modal de confirmación para reiniciar ventanillas o toda la jornada en pruebas -->
+  <dialog id="modal-reiniciar" class="modal-dialogo" aria-labelledby="modal-reiniciar-titulo">
+    <h2 id="modal-reiniciar-titulo" class="modal-dialogo-titulo">Reiniciar jornada</h2>
+    <p class="modal-error-texto">
+      Seleccione si desea poner en cero únicamente las ventanillas (conservando los turnos del día) o reiniciar también los turnos de hoy para pruebas:
+    </p>
+    <div class="modal-opciones-cierre">
+      <button type="button" id="btn-reiniciar-ventanillas" class="btn btn-primario">
+        Solo ventanillas (conservar turnos)
+      </button>
+      <button type="button" id="btn-reiniciar-todo" class="btn btn-peligro">
+        Todo hoy en cero (pruebas)
+      </button>
+    </div>
+    <form method="dialog" class="modal-error-acciones">
+      <button type="submit" class="btn btn-secundario" autofocus>Cancelar</button>
+    </form>
+  </dialog>
+
+  <!-- Modal accesible para errores de red/servidor al reiniciar -->
+  <dialog id="modal-error" class="modal-error" aria-labelledby="modal-error-titulo">
+    <h2 id="modal-error-titulo" class="modal-error-titulo">No se pudo reiniciar</h2>
+    <p id="modal-error-mensaje" class="modal-error-texto"></p>
+    <form method="dialog" class="modal-error-acciones">
+      <button type="submit" class="btn btn-primario" autofocus>Aceptar</button>
+    </form>
+  </dialog>
+
+  <script>
+    /**
+     * Lógica del Dashboard en Tiempo Real (Vanilla ES6+ sin frameworks).
+     * Características:
+     *   - Carga inicial con GET /api/estado + actualizaciones en vivo vía EventSource.
+     *   - Uso seguro de Chart.js si cargó desde CDN, y barras HTML/CSS si está offline.
+     *   - Pulso local de 1 s para avanzar el tiempo activo de ventanillas en 'activo'.
+     */
+    (function inicializarDashboard() {
+      const NOMBRES_SERVICIO = {
+        caja: 'Caja',
+        ejecutivo: 'Ejecutivo',
+        atencion: 'Atención a Cliente'
+      };
+
+      const ETIQUETAS_ESTADO = {
+        activo: 'Activa',
+        pausa: 'En pausa',
+        cerrado: 'Cerrada'
+      };
+
+      const ETIQUETAS_MOTIVOS = [
+        { clave: 'atendido', nombre: 'Atendido', color: '#047857' },
+        { clave: 'no_atendido', nombre: 'No atendido', color: '#b45309' },
+        { clave: 'no_aparecio', nombre: 'No apareció', color: '#b91c1c' },
+        { clave: 'turno_equivocado', nombre: 'Turno equivocado', color: '#475569' }
+      ];
+
+      // Referencias del DOM.
+      const subtituloJornada = document.getElementById('subtitulo-jornada');
+      const estadoSSE = document.getElementById('estado-sse');
+      const textoSSE = document.getElementById('texto-sse');
+      const relojServidor = document.getElementById('reloj-servidor');
+      const btnAbrirReiniciar = document.getElementById('btn-abrir-reiniciar');
+
+      const kpiEspera = document.getElementById('kpi-espera');
+      const kpiAtencion = document.getElementById('kpi-atencion');
+      const kpiTotal = document.getElementById('kpi-total');
+      const kpiActivos = document.getElementById('kpi-activos');
+      const kpiCerrados = document.getElementById('kpi-cerrados');
+
+      const scriptChartJs = document.getElementById('script-chartjs');
+      const canvasHoras = document.getElementById('canvas-horas');
+      const fallbackHoras = document.getElementById('fallback-horas');
+      const avisoOfflineHoras = document.getElementById('aviso-offline-horas');
+
+      const canvasMotivos = document.getElementById('canvas-motivos');
+      const fallbackMotivos = document.getElementById('fallback-motivos');
+      const avisoOfflineMotivos = document.getElementById('aviso-offline-motivos');
+      const tbodyMotivos = document.getElementById('tbody-motivos');
+
+      const tbodyVentanillas = document.getElementById('tbody-ventanillas');
+
+      const modalReiniciar = document.getElementById('modal-reiniciar');
+      const btnReiniciarVentanillas = document.getElementById('btn-reiniciar-ventanillas');
+      const btnReiniciarTodo = document.getElementById('btn-reiniciar-todo');
+      const modalError = document.getElementById('modal-error');
+      const modalErrorMensaje = document.getElementById('modal-error-mensaje');
+
+      // Estado sincronizado en memoria.
+      let ultimoEstado = null;
+      let desfaseServidorMs = 0;
+      let marcaSyncMs = Date.now();
+      let fuenteEventos = null;
+      let graficaHoras = null;
+      let graficaMotivos = null;
+
+      /**
+       * Formatea una marca en milisegundos como DD/MM/YY HH:mm sin zonas horarias.
+       *
+       * @param {number} ms - Milisegundos del servidor.
+       * @returns {string} Fecha y hora en formato DD/MM/YY HH:mm.
+       */
+      function formatearFechaHora(ms) {
+        return new Date(ms)
+          .toLocaleString('es-MX', {
+            dateStyle: 'short',
+            timeStyle: 'short',
+            hour12: false
+          })
+          .replace(',', '');
+      }
+
+      /**
+       * Convierte una fecha YYYY-MM-DD de la jornada al formato DD/MM/YY solicitado.
+       *
+       * @param {string} fechaJornada - Cadena YYYY-MM-DD enviada por el servidor.
+       * @returns {string} Fecha formateada en DD/MM/YY.
+       */
+      function formatearFechaJornadaCorta(fechaJornada) {
+        if (!fechaJornada || !fechaJornada.includes('-')) return '--/--/--';
+        const [anio, mes, dia] = fechaJornada.split('-');
+        return `${dia}/${mes}/${anio.slice(-2)}`;
+      }
+
+      /**
+       * Formatea segundos a formato legible para KPIs ("4 min 15 s", "42 s", etc.).
+       *
+       * @param {number} totalSegundos - Promedio en segundos.
+       * @returns {string} Texto legible para el supervisor.
+       */
+      function formatearPromedioSegundos(totalSegundos) {
+        const segs = Math.max(0, Math.round(totalSegundos || 0));
+        if (segs < 60) {
+          return `${segs} s`;
+        }
+        const minutos = Math.floor(segs / 60);
+        const resto = segs % 60;
+        return resto > 0 ? `${minutos} min ${resto} s` : `${minutos} min`;
+      }
+
+      /**
+       * Convierte segundos a HH:MM:SS para la columna de tiempo activo neto.
+       *
+       * @param {number} totalSegundos - Segundos acumulados.
+       * @returns {string} Duración HH:MM:SS.
+       */
+      function formatearDuracion(totalSegundos) {
+        const segs = Math.max(0, Math.floor(totalSegundos || 0));
+        const h = String(Math.floor(segs / 3600)).padStart(2, '0');
+        const m = String(Math.floor((segs % 3600) / 60)).padStart(2, '0');
+        const s = String(segs % 60).padStart(2, '0');
+        return `${h}:${m}:${s}`;
+      }
+
+      /**
+       * Renderiza barras horizontales HTML/CSS cuando Chart.js no está disponible
+       * en entorno LAN sin internet (o mientras se espera al CDN).
+       *
+       * @param {HTMLElement} contenedor - Elemento destino.
+       * @param {Array<{ etiqueta: string, valor: number, textoValor: string, color?: string }>} filas - Datos.
+       * @param {number} maximo - Valor máximo para calcular el porcentaje de barra.
+       * @param {string} mensajeVacio - Texto si no hay datos.
+       */
+      function renderizarBarrasFallback(contenedor, filas, maximo, mensajeVacio) {
+        contenedor.textContent = '';
+
+        if (!filas || filas.length === 0) {
+          const p = document.createElement('p');
+          p.className = 'encabezado-subtitulo';
+          p.textContent = mensajeVacio;
+          contenedor.appendChild(p);
+          return;
+        }
+
+        for (const fila of filas) {
+          const envoltorio = document.createElement('div');
+          envoltorio.className = 'fallback-fila';
+
+          const etiqueta = document.createElement('span');
+          etiqueta.textContent = fila.etiqueta;
+
+          const pista = document.createElement('div');
+          pista.className = 'fallback-pista';
+
+          const relleno = document.createElement('div');
+          relleno.className = 'fallback-relleno';
+          const porcentaje = maximo > 0 ? Math.round((fila.valor * 100) / maximo) : 0;
+          relleno.style.inlineSize = `${porcentaje}%`;
+          if (fila.color) {
+            relleno.style.backgroundColor = fila.color;
+          }
+          pista.appendChild(relleno);
+
+          const texto = document.createElement('span');
+          texto.textContent = fila.textoValor;
+
+          envoltorio.append(etiqueta, pista, texto);
+          contenedor.appendChild(envoltorio);
+        }
+      }
+
+      /**
+       * Actualiza o crea la gráfica de clientes atendidos por hora (Chart.js o fallback).
+       *
+       * @param {Array<{ etiqueta: string, total: number }>} porHora - Serie por hora.
+       */
+      function actualizarGraficaHoras(porHora) {
+        const etiquetas = porHora.map((item) => item.etiqueta);
+        const valores = porHora.map((item) => item.total);
+
+        if (typeof window.Chart === 'function') {
+          avisoOfflineHoras.classList.add('oculto');
+          fallbackHoras.classList.add('oculto');
+          canvasHoras.classList.remove('oculto');
+
+          if (!graficaHoras) {
+            graficaHoras = new window.Chart(canvasHoras, {
+              type: 'bar',
+              data: {
+                labels: etiquetas,
+                datasets: [
+                  {
+                    label: 'Clientes atendidos',
+                    data: valores,
+                    backgroundColor: '#1d4ed8',
+                    borderRadius: 6
+                  }
+                ]
+              },
+              options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                  y: {
+                    beginAtZero: true,
+                    ticks: { precision: 0 }
+                  }
+                }
+              }
+            });
+          } else {
+            graficaHoras.data.labels = etiquetas;
+            graficaHoras.data.datasets[0].data = valores;
+            graficaHoras.update();
+          }
+          return;
+        }
+
+        // Modo offline LAN seguro si Chart.js no cargó.
+        canvasHoras.classList.add('oculto');
+        fallbackHoras.classList.remove('oculto');
+        const maxHora = valores.length > 0 ? Math.max(...valores) : 0;
+        renderizarBarrasFallback(
+          fallbackHoras,
+          porHora.map((item) => ({
+            etiqueta: item.etiqueta,
+            valor: item.total,
+            textoValor: String(item.total)
+          })),
+          maxHora,
+          'Sin clientes atendidos registrados hoy.'
+        );
+      }
+
+      /**
+       * Actualiza la tabla y gráfica de los 4 motivos de cierre (Chart.js o fallback).
+       *
+       * @param {object} motivos - Conteo y porcentaje por cada uno de los 4 motivos.
+       */
+      function actualizarMotivos(motivos) {
+        tbodyMotivos.textContent = '';
+
+        const etiquetas = [];
+        const valores = [];
+        const colores = [];
+        const filasFallback = [];
+
+        for (const item of ETIQUETAS_MOTIVOS) {
+          const info = (motivos && motivos[item.clave]) || { cantidad: 0, porcentaje: 0 };
+          etiquetas.push(item.nombre);
+          valores.push(info.cantidad);
+          colores.push(item.color);
+
+          filasFallback.push({
+            etiqueta: item.nombre,
+            valor: info.porcentaje,
+            textoValor: `${info.cantidad} (${info.porcentaje}%)`,
+            color: item.color
+          });
+
+          const fila = document.createElement('tr');
+          const cNombre = document.createElement('td');
+          cNombre.textContent = item.nombre;
+          const cCantidad = document.createElement('td');
+          cCantidad.textContent = String(info.cantidad);
+          const cPorcentaje = document.createElement('td');
+          cPorcentaje.textContent = `${info.porcentaje}%`;
+          fila.append(cNombre, cCantidad, cPorcentaje);
+          tbodyMotivos.appendChild(fila);
+        }
+
+        if (typeof window.Chart === 'function') {
+          avisoOfflineMotivos.classList.add('oculto');
+          fallbackMotivos.classList.add('oculto');
+          canvasMotivos.classList.remove('oculto');
+
+          if (!graficaMotivos) {
+            graficaMotivos = new window.Chart(canvasMotivos, {
+              type: 'doughnut',
+              data: {
+                labels: etiquetas,
+                datasets: [
+                  {
+                    data: valores,
+                    backgroundColor: colores
+                  }
+                ]
+              },
+              options: {
+                responsive: true,
+                maintainAspectRatio: false
+              }
+            });
+          } else {
+            graficaMotivos.data.datasets[0].data = valores;
+            graficaMotivos.update();
+          }
+          return;
+        }
+
+        // Modo offline LAN seguro si Chart.js no cargó.
+        canvasMotivos.classList.add('oculto');
+        fallbackMotivos.classList.remove('oculto');
+        renderizarBarrasFallback(fallbackMotivos, filasFallback, 100, 'Sin cierres hoy.');
+      }
+
+      /**
+       * Renderiza la tabla de rendimiento por ventanilla, incluyendo celdas con
+       * marca de tiempo para actualizar el contador activo cada segundo en vivo.
+       *
+       * @param {Array<object>} rendimiento - Lista ordenada de las 7 ventanillas.
+       */
+      function renderizarRendimientoVentanillas(rendimiento) {
+        tbodyVentanillas.textContent = '';
+        const transcurridoDesdeSync = Math.max(0, Math.floor((Date.now() - marcaSyncMs) / 1000));
+
+        for (const v of rendimiento) {
+          const fila = document.createElement('tr');
+
+          const cVentanilla = document.createElement('td');
+          cVentanilla.textContent = v.ventanilla;
+
+          const cServicio = document.createElement('td');
+          const bServicio = document.createElement('span');
+          bServicio.className = `badge badge--${v.tipo_servicio}`;
+          bServicio.textContent = NOMBRES_SERVICIO[v.tipo_servicio] || v.tipo_servicio;
+          cServicio.appendChild(bServicio);
+
+          const cEstado = document.createElement('td');
+          const bEstado = document.createElement('span');
+          bEstado.className = `badge badge--${v.estado}`;
+          bEstado.textContent = ETIQUETAS_ESTADO[v.estado] || v.estado;
+          cEstado.appendChild(bEstado);
+
+          const cCerrados = document.createElement('td');
+          cCerrados.textContent = String(v.turnosCerrados || 0);
+
+          const cAtendidos = document.createElement('td');
+          cAtendidos.textContent = String(v.turnosAtendidos || 0);
+
+          const cTiempo = document.createElement('td');
+          cTiempo.dataset.baseSegundos = String(v.segundosActivos || 0);
+          cTiempo.dataset.activa = v.estado === 'activo' ? '1' : '0';
+          const segundosEnVivo =
+            (v.segundosActivos || 0) + (v.estado === 'activo' ? transcurridoDesdeSync : 0);
+          cTiempo.textContent = formatearDuracion(segundosEnVivo);
+
+          fila.append(cVentanilla, cServicio, cEstado, cCerrados, cAtendidos, cTiempo);
+          tbodyVentanillas.appendChild(fila);
+        }
+      }
+
+      /**
+       * Actualiza el reloj del encabezado y los tiempos activos de ventanillas abiertas.
+       */
+      function actualizarRelojYTiemposEnVivo() {
+        relojServidor.textContent = formatearFechaHora(Date.now() + desfaseServidorMs);
+
+        const transcurridoDesdeSync = Math.max(0, Math.floor((Date.now() - marcaSyncMs) / 1000));
+        const celdasTiempo = tbodyVentanillas.querySelectorAll('td[data-activa="1"]');
+        for (const celda of celdasTiempo) {
+          const base = Number(celda.dataset.baseSegundos) || 0;
+          celda.textContent = formatearDuracion(base + transcurridoDesdeSync);
+        }
+      }
+
+      /**
+       * Aplica un snapshot completo del servidor a todos los bloques del dashboard.
+       *
+       * @param {object} estado - Snapshot completo devuelto por GET /api/estado o SSE.
+       */
+      function aplicarEstado(estado) {
+        if (!estado || !estado.metricas) return;
+        ultimoEstado = estado;
+        marcaSyncMs = Date.now();
+
+        if (typeof estado.ahora === 'number') {
+          desfaseServidorMs = estado.ahora - Date.now();
+        }
+        if (estado.fechaJornada) {
+          subtituloJornada.textContent = `Indicadores de la jornada ${formatearFechaJornadaCorta(
+            estado.fechaJornada
+          )}`;
+        }
+
+        const m = estado.metricas;
+        kpiEspera.textContent = formatearPromedioSegundos(m.tiempoPromedioEsperaSeg);
+        kpiAtencion.textContent = formatearPromedioSegundos(m.tiempoPromedioAtencionSeg);
+        kpiTotal.textContent = String(m.totalTurnos || 0);
+        kpiActivos.textContent = `${m.enEspera || 0} / ${m.enAtencion || 0}`;
+        kpiCerrados.textContent = String(m.totalCerrados || 0);
+
+        actualizarGraficaHoras(m.clientesAtendidosPorHora || []);
+        actualizarMotivos(m.motivos || {});
+        renderizarRendimientoVentanillas(m.rendimientoPorVentanilla || []);
+        actualizarRelojYTiemposEnVivo();
+      }
+
+      /**
+       * Carga inicial de métricas desde GET /api/estado.
+       */
+      async function cargarEstadoInicial() {
+        try {
+          const respuesta = await fetch('/api/estado');
+          if (!respuesta.ok) return;
+          const estado = await respuesta.json();
+          aplicarEstado(estado);
+        } catch (_) {
+          // Reintentará automáticamente vía SSE si el servidor aún está iniciando.
+        }
+      }
+
+      /**
+       * Suscripción en vivo mediante Server-Sent Events (/api/eventos).
+       */
+      function conectarSSE() {
+        if (fuenteEventos) {
+          fuenteEventos.close();
+        }
+
+        fuenteEventos = new EventSource('/api/eventos');
+
+        fuenteEventos.onopen = () => {
+          estadoSSE.className = 'estado-sse estado-sse--conectado';
+          textoSSE.textContent = 'En vivo';
+        };
+
+        fuenteEventos.onmessage = (evento) => {
+          try {
+            const payload = JSON.parse(evento.data);
+            if (payload && payload.estado) {
+              aplicarEstado(payload.estado);
+            }
+          } catch (_) {
+            // Ignora mensajes malformados sin perder la conexión SSE.
+          }
+        };
+
+        fuenteEventos.onerror = () => {
+          estadoSSE.className = 'estado-sse estado-sse--error';
+          textoSSE.textContent = 'Reconectando...';
+        };
+      }
+
+      // Si Chart.js termina de cargar de forma asíncrona tras el primer render,
+      // promovemos automáticamente las barras fallback a gráficas interactivas.
+      if (scriptChartJs) {
+        scriptChartJs.addEventListener('load', () => {
+          if (ultimoEstado && ultimoEstado.metricas) {
+            actualizarGraficaHoras(ultimoEstado.metricas.clientesAtendidosPorHora || []);
+            actualizarMotivos(ultimoEstado.metricas.motivos || {});
+          }
+        });
+        scriptChartJs.addEventListener('error', () => {
+          avisoOfflineHoras.classList.remove('oculto');
+          avisoOfflineMotivos.classList.remove('oculto');
+        });
+      }
+
+      /**
+       * Ejecuta el reinicio en el servidor (solo ventanillas o todo hoy en cero)
+       * y actualiza la vista en vivo al recibir la confirmación.
+       *
+       * @param {boolean} limpiarTurnosHoy - true para borrar los turnos de prueba de hoy.
+       */
+      async function ejecutarReinicio(limpiarTurnosHoy) {
+        btnReiniciarVentanillas.disabled = true;
+        btnReiniciarTodo.disabled = true;
+
+        try {
+          const respuesta = await fetch('/api/jornada/reiniciar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ limpiarTurnosHoy })
+          });
+
+          const datos = await respuesta.json().catch(() => ({}));
+          if (!respuesta.ok) {
+            throw new Error(datos.error || `Error del servidor (HTTP ${respuesta.status}).`);
+          }
+
+          if (modalReiniciar.open) {
+            modalReiniciar.close();
+          }
+          await cargarEstadoInicial();
+        } catch (error) {
+          if (modalReiniciar.open) {
+            modalReiniciar.close();
+          }
+          modalErrorMensaje.textContent = error.message || 'Error de conexión con el servidor.';
+          if (!modalError.open) {
+            modalError.showModal();
+          }
+        } finally {
+          btnReiniciarVentanillas.disabled = false;
+          btnReiniciarTodo.disabled = false;
+        }
+      }
+
+      btnAbrirReiniciar.addEventListener('click', () => {
+        if (!modalReiniciar.open) {
+          modalReiniciar.showModal();
+        }
+      });
+      btnReiniciarVentanillas.addEventListener('click', () => ejecutarReinicio(false));
+      btnReiniciarTodo.addEventListener('click', () => ejecutarReinicio(true));
+
+      cargarEstadoInicial();
+      conectarSSE();
+      setInterval(actualizarRelojYTiemposEnVivo, 1000);
+    })();
+  </script>
+</body>
+</html>

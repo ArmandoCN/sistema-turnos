@@ -1,0 +1,1075 @@
+/**
+ * ============================================================================
+ * Archivo: public/estilos.css (Paso 4 — Hoja de Estilos Compartida)
+ * ----------------------------------------------------------------------------
+ * Propósito general:
+ *   Define el sistema visual completo de las cuatro vistas del Sistema de
+ *   Turnos (kiosco.html, ventanilla.html, pantalla.html y dashboard.html),
+ *   usando CSS3 puro sin frameworks externos ni selectores globales (*).
+ *
+ * Estructura en capas (@layer):
+ *   1. tokens:     variables de diseño, paleta de servicios y alto contraste.
+ *   2. base:       box-sizing por elementos, tipografía base y accesibilidad.
+ *   3. components: tarjetas, botones táctiles, badges, tablas y modal <dialog>.
+ *   4. views:      layouts responsivos específicos de las 4 interfaces.
+ *   5. @media print: reglas exclusivas para impresora térmica 58 mm
+ *                    (ancho útil 48 mm, márgenes 0, solo código y fecha/hora).
+ *
+ * Dependencias con otros módulos:
+ *   - Referenciado vía <link rel="stylesheet" href="/estilos.css"> por todas
+ *     las páginas HTML ubicadas en public/.
+ * ============================================================================
+ */
+
+@layer tokens, base, components, views;
+
+/* --------------------------------------------------------------------------
+ * 1. Tokens de Diseño
+ * -------------------------------------------------------------------------- */
+@layer tokens {
+  :root {
+    /* Tipografía nativa del sistema para operación 100% offline en LAN */
+    --fuente-base: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    --fuente-mono: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', monospace;
+
+    /* Paleta general clara para operación en mostrador, kiosco y supervisión */
+    --color-fondo: #f1f5f9;
+    --color-superficie: #ffffff;
+    --color-superficie-suave: #f8fafc;
+    --color-borde: #cbd5e1;
+    --color-texto: #0f172a;
+    --color-texto-suave: #475569;
+
+    /* Colores semánticos de acción y estado */
+    --color-primario: #1d4ed8;
+    --color-primario-hover: #1e40af;
+    --color-exito: #047857;
+    --color-exito-hover: #065f46;
+    --color-exito-suave: #ecfdf5;
+    --color-alerta: #b45309;
+    --color-alerta-hover: #92400e;
+    --color-alerta-suave: #fffbeb;
+    --color-peligro: #b91c1c;
+    --color-peligro-hover: #991b1b;
+    --color-peligro-suave: #fef2f2;
+    --color-neutro: #334155;
+    --color-neutro-suave: #e2e8f0;
+
+    /* Colores identificadores por tipo de servicio */
+    --color-caja: #1d4ed8;
+    --color-caja-suave: #eff6ff;
+    --color-ejecutivo: #047857;
+    --color-ejecutivo-suave: #ecfdf5;
+    --color-atencion: #b45309;
+    --color-atencion-suave: #fffbeb;
+
+    /* Alto contraste para pantalla pública de sala de espera */
+    --pantalla-fondo: #090f1d;
+    --pantalla-tarjeta: #111b30;
+    --pantalla-tarjeta-destacada: #172542;
+    --pantalla-borde: #26385e;
+    --pantalla-texto: #f8fafc;
+    --pantalla-texto-suave: #cbd5e1;
+    --pantalla-acento: #facc15;
+    --pantalla-cian: #38bdf8;
+
+    /* Geometría y elevación */
+    --radio-md: 12px;
+    --radio-lg: 18px;
+    --sombra-suave: 0 2px 8px rgb(15 23 42 / 0.06);
+    --sombra-media: 0 8px 24px rgb(15 23 42 / 0.12);
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 2. Estilos Base (sin reset global *)
+ * -------------------------------------------------------------------------- */
+@layer base {
+  /* Aplicamos border-box únicamente a elementos estructurales y controles */
+  :where(
+    html,
+    body,
+    header,
+    main,
+    section,
+    aside,
+    article,
+    nav,
+    footer,
+    div,
+    form,
+    fieldset,
+    dialog,
+    table,
+    thead,
+    tbody,
+    tr,
+    th,
+    td,
+    ul,
+    ol,
+    li,
+    h1,
+    h2,
+    h3,
+    h4,
+    p,
+    span,
+    label,
+    button,
+    input,
+    select
+  ) {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-size: 16px;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-block-size: 100dvh;
+    font-family: var(--fuente-base);
+    background-color: var(--color-fondo);
+    color: var(--color-texto);
+    line-height: 1.45;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  p {
+    margin-block-start: 0;
+  }
+
+  button {
+    font: inherit;
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-radius: var(--radio-md);
+    transition: background-color 0.15s ease, transform 0.1s ease, border-color 0.15s ease;
+  }
+
+  /* Indicador de foco claro para navegación por teclado y accesibilidad */
+  :where(button, input, select, a, [tabindex]):focus-visible {
+    outline: 3px solid var(--color-primario);
+    outline-offset: 2px;
+  }
+
+  /* Evita espacios residuales en canvas o elementos multimedia inline */
+  canvas {
+    display: block;
+    max-inline-size: 100%;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 3. Componentes Compartidos
+ * -------------------------------------------------------------------------- */
+@layer components {
+  .contenedor {
+    inline-size: 100%;
+    max-inline-size: 1320px;
+    margin-inline: auto;
+    padding-inline: clamp(1rem, 2.5vw, 2rem);
+    padding-block: clamp(1rem, 2vw, 1.5rem);
+  }
+
+  /* Barra superior común para ventanilla, kiosco, pantalla y dashboard */
+  .encabezado-vista {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: safe center;
+    justify-content: space-between;
+    gap: 0.75rem 1.25rem;
+    padding-block-end: 1rem;
+    margin-block-end: 1.25rem;
+    border-block-end: 1px solid var(--color-borde);
+  }
+
+  .encabezado-titulo {
+    margin: 0;
+    font-size: clamp(1.35rem, 1rem + 1.2vw, 2rem);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+
+  .encabezado-subtitulo {
+    margin: 0.2rem 0 0;
+    color: var(--color-texto-suave);
+    font-size: 0.95rem;
+  }
+
+  .encabezado-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  /* Indicador de conexión SSE en tiempo real */
+  .estado-sse {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding-block: 0.35rem;
+    padding-inline: 0.75rem;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    background-color: var(--color-superficie);
+    border: 1px solid var(--color-borde);
+  }
+
+  .indicador-punto {
+    inline-size: 10px;
+    block-size: 10px;
+    border-radius: 50%;
+    background-color: var(--color-alerta);
+  }
+
+  .estado-sse--conectado .indicador-punto {
+    background-color: var(--color-exito);
+  }
+
+  .estado-sse--error .indicador-punto {
+    background-color: var(--color-peligro);
+  }
+
+  .reloj-servidor {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    padding-block: 0.35rem;
+    padding-inline: 0.75rem;
+    border-radius: 999px;
+    background-color: var(--color-superficie);
+    border: 1px solid var(--color-borde);
+    font-size: 0.9rem;
+  }
+
+  /* Tarjeta contenedora genérica */
+  .tarjeta {
+    background-color: var(--color-superficie);
+    border: 1px solid var(--color-borde);
+    border-radius: var(--radio-lg);
+    padding: clamp(1rem, 2vw, 1.5rem);
+    box-shadow: var(--sombra-suave);
+  }
+
+  .tarjeta-titulo {
+    margin: 0 0 0.75rem;
+    font-size: 1.1rem;
+    font-weight: 700;
+  }
+
+  /* Botones de acción con área táctil mínima accesible (48px) */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    min-block-size: 48px;
+    padding-block: 0.65rem;
+    padding-inline: 1.25rem;
+    font-weight: 700;
+    text-align: center;
+  }
+
+  .btn:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .btn-primario {
+    background-color: var(--color-primario);
+    color: #ffffff;
+  }
+
+  .btn-primario:hover:not(:disabled) {
+    background-color: var(--color-primario-hover);
+  }
+
+  .btn-exito {
+    background-color: var(--color-exito);
+    color: #ffffff;
+  }
+
+  .btn-exito:hover:not(:disabled) {
+    background-color: var(--color-exito-hover);
+  }
+
+  .btn-alerta {
+    background-color: var(--color-alerta);
+    color: #ffffff;
+  }
+
+  .btn-alerta:hover:not(:disabled) {
+    background-color: var(--color-alerta-hover);
+  }
+
+  .btn-peligro {
+    background-color: var(--color-peligro);
+    color: #ffffff;
+  }
+
+  .btn-peligro:hover:not(:disabled) {
+    background-color: var(--color-peligro-hover);
+  }
+
+  .btn-secundario {
+    background-color: var(--color-superficie);
+    color: var(--color-texto);
+    border-color: var(--color-borde);
+  }
+
+  .btn-secundario:hover:not(:disabled) {
+    background-color: var(--color-neutro-suave);
+  }
+
+  .btn-neutro {
+    background-color: var(--color-neutro);
+    color: #ffffff;
+  }
+
+  .btn-neutro:hover:not(:disabled) {
+    background-color: #1e293b;
+  }
+
+  .btn-encabezado {
+    min-block-size: 38px;
+    padding-block: 0.35rem;
+    padding-inline: 0.9rem;
+    font-size: 0.88rem;
+  }
+
+  /* Etiquetas de estado y servicio */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding-block: 0.25rem;
+    padding-inline: 0.65rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .badge--activo {
+    background-color: var(--color-exito-suave);
+    color: var(--color-exito);
+  }
+
+  .badge--pausa {
+    background-color: var(--color-alerta-suave);
+    color: var(--color-alerta);
+  }
+
+  .badge--cerrado {
+    background-color: var(--color-neutro-suave);
+    color: var(--color-neutro);
+  }
+
+  .badge--caja {
+    background-color: var(--color-caja-suave);
+    color: var(--color-caja);
+  }
+
+  .badge--ejecutivo {
+    background-color: var(--color-ejecutivo-suave);
+    color: var(--color-ejecutivo);
+  }
+
+  .badge--atencion {
+    background-color: var(--color-atencion-suave);
+    color: var(--color-atencion);
+  }
+
+  /* Tabla responsiva con desplazamiento horizontal seguro */
+  .tabla-envoltorio {
+    inline-size: 100%;
+    overflow-x: auto;
+  }
+
+  .tabla-datos {
+    inline-size: 100%;
+    border-collapse: collapse;
+    font-size: 0.95rem;
+  }
+
+  .tabla-datos th,
+  .tabla-datos td {
+    padding-block: 0.7rem;
+    padding-inline: 0.75rem;
+    text-align: start;
+    border-block-end: 1px solid var(--color-borde);
+  }
+
+  .tabla-datos th {
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-texto-suave);
+    background-color: var(--color-superficie-suave);
+  }
+
+  .tabla-datos td {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Reglas obligatorias para <dialog> modal accesible:
+     - Nunca definir display fuera de dialog[open] para no romper el estado cerrado.
+     - Bloquear scroll del documento subyacente con overscroll-behavior: contain. */
+  :where(dialog.modal-error, dialog.modal-dialogo) {
+    inline-size: min(92%, 480px);
+    margin: auto;
+    padding: 0;
+    border: 2px solid var(--color-primario);
+    border-radius: var(--radio-lg);
+    background-color: var(--color-superficie);
+    color: var(--color-texto);
+    box-shadow: var(--sombra-media);
+  }
+
+  dialog.modal-error {
+    border-color: var(--color-peligro);
+  }
+
+  :where(dialog.modal-error, dialog.modal-dialogo)[open] {
+    display: grid;
+    gap: 1rem;
+    padding: 1.5rem;
+  }
+
+  :where(dialog.modal-error, dialog.modal-dialogo):modal {
+    overscroll-behavior: contain;
+  }
+
+  :where(dialog.modal-error, dialog.modal-dialogo)::backdrop {
+    overflow: hidden;
+    overscroll-behavior: contain;
+    background-color: rgb(15 23 42 / 0.65);
+  }
+
+  .modal-error-titulo,
+  .modal-dialogo-titulo {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 800;
+  }
+
+  .modal-error-titulo {
+    color: var(--color-peligro);
+  }
+
+  .modal-dialogo-titulo {
+    color: var(--color-texto);
+  }
+
+  .modal-error-texto {
+    margin: 0;
+    color: var(--color-texto);
+    font-size: 1rem;
+  }
+
+  .modal-opciones-cierre {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 0.85rem;
+  }
+
+  .modal-opciones-cierre .btn {
+    min-block-size: 68px;
+    padding-block: 1rem;
+    padding-inline: 1.25rem;
+    font-size: 1.1rem;
+    font-weight: 800;
+    border-radius: var(--radio-lg);
+  }
+
+  .modal-error-acciones {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.65rem;
+    margin-block-start: 0.25rem;
+  }
+
+  /* Elemento oculto en pantalla normal; visible únicamente al imprimir en @media print */
+  .solo-impresion {
+    display: none;
+  }
+
+  .oculto {
+    display: none !important;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 4. Estilos Específicos por Vista
+ * -------------------------------------------------------------------------- */
+@layer views {
+  /* === VISTA 1: KIOSCO DE TURNOS (kiosco.html) === */
+  .vista-kiosco .kiosco-principal {
+    min-block-size: calc(100dvh - 3rem);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 1.5rem;
+  }
+
+  .kiosco-instruccion {
+    text-align: center;
+    font-size: clamp(1.2rem, 1rem + 1vw, 1.75rem);
+    font-weight: 700;
+    color: var(--color-texto-suave);
+    margin: 0;
+  }
+
+  .kiosco-opciones {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1.25rem;
+  }
+
+  .btn-kiosco {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    min-block-size: 200px;
+    padding: 1.5rem;
+    border-radius: var(--radio-lg);
+    border: 2px solid transparent;
+    box-shadow: var(--sombra-media);
+    color: #ffffff;
+  }
+
+  .btn-kiosco--caja {
+    background-color: var(--color-caja);
+  }
+
+  .btn-kiosco--caja:hover:not(:disabled) {
+    background-color: var(--color-primario-hover);
+  }
+
+  .btn-kiosco--ejecutivo {
+    background-color: var(--color-ejecutivo);
+  }
+
+  .btn-kiosco--ejecutivo:hover:not(:disabled) {
+    background-color: var(--color-exito-hover);
+  }
+
+  .btn-kiosco--atencion {
+    background-color: var(--color-atencion);
+  }
+
+  .btn-kiosco--atencion:hover:not(:disabled) {
+    background-color: var(--color-alerta-hover);
+  }
+
+  .btn-kiosco-letra {
+    display: grid;
+    place-items: center;
+    inline-size: 64px;
+    block-size: 64px;
+    border-radius: 50%;
+    background-color: rgb(255 255 255 / 0.2);
+    font-size: 2rem;
+    font-weight: 900;
+  }
+
+  .btn-kiosco-nombre {
+    font-size: clamp(1.35rem, 1.1rem + 0.9vw, 1.85rem);
+    font-weight: 800;
+  }
+
+  .btn-kiosco-desc {
+    font-size: 0.95rem;
+    opacity: 0.92;
+    font-weight: 500;
+  }
+
+  /* Tarjeta temporal de confirmación en pantalla durante los 3 segundos de retorno */
+  .kiosco-confirmacion {
+    text-align: center;
+    max-inline-size: 520px;
+    margin-inline: auto;
+    padding: 2rem;
+    border: 2px solid var(--color-primario);
+  }
+
+  .kiosco-confirmacion-codigo {
+    font-size: clamp(3rem, 2.2rem + 3vw, 4.75rem);
+    font-weight: 900;
+    color: var(--color-primario);
+    line-height: 1.05;
+    margin-block: 0.5rem;
+  }
+
+  /* === VISTA 2: PANEL DE VENTANILLA (ventanilla.html) === */
+  .grid-ventanillas {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+  }
+
+  .tarjeta-ventanilla-opcion {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.65rem;
+    inline-size: 100%;
+    padding: 1.25rem;
+    text-align: start;
+    background-color: var(--color-superficie);
+    border: 2px solid var(--color-borde);
+    border-radius: var(--radio-lg);
+    color: var(--color-texto);
+    box-shadow: var(--sombra-suave);
+  }
+
+  .tarjeta-ventanilla-opcion:hover:not(:disabled) {
+    border-color: var(--color-primario);
+    background-color: var(--color-caja-suave);
+  }
+
+  .tarjeta-ventanilla-opcion:disabled {
+    background-color: var(--color-superficie-suave);
+    border-style: dashed;
+    opacity: 0.65;
+    cursor: not-allowed;
+  }
+
+  .ventanilla-nombre {
+    font-size: 1.25rem;
+    font-weight: 800;
+  }
+
+  /* Panel operativo ajustado a una sola pantalla:
+     - Columna izquierda: atención actual + 4 botones grandes de estado.
+     - Columna derecha: caja de ventanilla/tiempo activo + fila de espera con scroll interno. */
+  .vista-ventanilla .contenedor {
+    padding-block: 0.75rem;
+  }
+
+  .vista-ventanilla .encabezado-vista {
+    padding-block-end: 0.65rem;
+    margin-block-end: 0.85rem;
+  }
+
+  .ventanilla-panel-grid {
+    display: grid;
+    grid-template-columns: 1.45fr 1fr;
+    gap: 1rem;
+    align-items: start;
+  }
+
+  @media (max-width: 880px) {
+    .ventanilla-panel-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .ventanilla-tarjeta-principal {
+    padding: 1.15rem 1.35rem;
+  }
+
+  .ventanilla-atencion-cabecera {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem 1rem;
+    margin-block-end: 0.5rem;
+  }
+
+  .ventanilla-atencion-cabecera .tarjeta-titulo {
+    margin: 0;
+  }
+
+  .turno-actual-resumen {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem 1rem;
+    padding: 0.65rem 1rem;
+    border-radius: var(--radio-md);
+    background-color: var(--color-caja-suave);
+    border: 1px solid var(--color-borde);
+    margin-block-end: 0.75rem;
+  }
+
+  .turno-actual-codigo {
+    font-size: clamp(2.4rem, 1.9rem + 2vw, 3.4rem);
+    font-weight: 900;
+    color: var(--color-primario);
+    line-height: 1;
+    margin: 0;
+  }
+
+  .ventanilla-subtitulo-cierre {
+    margin-block: 0 0.6rem;
+    font-size: 1rem;
+  }
+
+  /* Cuadrícula de 2x2 con botones grandes para los 4 estados de cierre directo */
+  .grupo-botones-cierre {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.85rem;
+    margin-block: 0 0.85rem;
+  }
+
+  @media (max-width: 520px) {
+    .grupo-botones-cierre {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .grupo-botones-cierre .btn {
+    min-block-size: 84px;
+    padding-block: 1.15rem;
+    padding-inline: 1.25rem;
+    font-size: clamp(1.18rem, 1rem + 0.4vw, 1.38rem);
+    font-weight: 800;
+    border-radius: var(--radio-lg);
+    box-shadow: var(--sombra-suave);
+  }
+
+  .separador-pausa {
+    padding-block-start: 0.75rem;
+    border-block-start: 1px solid var(--color-borde);
+  }
+
+  .separador-pausa .btn {
+    min-block-size: 52px;
+    font-size: 1.05rem;
+  }
+
+  .acciones-ventanilla {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+
+  .acciones-ventanilla .btn {
+    flex: 1 1 180px;
+  }
+
+  /* Columna lateral derecha: información de ventanilla/tiempo activo + próximos en fila */
+  .ventanilla-columna-lateral {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .ventanilla-barra-operativa {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem 1rem;
+    padding: 1rem 1.25rem;
+  }
+
+  .ventanilla-barra-operativa .tarjeta-titulo {
+    margin-block-end: 0.35rem;
+  }
+
+  .ventanilla-tiempo-caja {
+    text-align: end;
+  }
+
+  .ventanilla-cronometro {
+    font-family: var(--fuente-mono);
+    font-size: 1.45rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    margin: 0.15rem 0 0;
+  }
+
+  .ventanilla-tarjeta-fila {
+    padding: 1rem 1.25rem;
+  }
+
+  .ventanilla-tabla-scroll {
+    max-block-size: 250px;
+    overflow-y: auto;
+  }
+
+  /* === VISTA 3: PANTALLA PÚBLICA DE SALA DE ESPERA (pantalla.html) === */
+  body.vista-pantalla {
+    background-color: var(--pantalla-fondo);
+    color: var(--pantalla-texto);
+  }
+
+  .vista-pantalla .encabezado-vista {
+    border-block-end-color: var(--pantalla-borde);
+  }
+
+  .vista-pantalla .encabezado-subtitulo {
+    color: var(--pantalla-texto-suave);
+  }
+
+  .vista-pantalla .estado-sse,
+  .vista-pantalla .reloj-servidor {
+    background-color: var(--pantalla-tarjeta);
+    border-color: var(--pantalla-borde);
+    color: var(--pantalla-texto);
+  }
+
+  .pantalla-grid {
+    display: grid;
+    grid-template-columns: 1.55fr 1fr;
+    gap: 1.5rem;
+    align-items: start;
+  }
+
+  @media (max-width: 900px) {
+    .pantalla-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .pantalla-panel {
+    background-color: var(--pantalla-tarjeta);
+    border: 1px solid var(--pantalla-borde);
+    border-radius: var(--radio-lg);
+    padding: 1.25rem;
+  }
+
+  .pantalla-panel-titulo {
+    margin: 0 0 1rem;
+    font-size: clamp(1.1rem, 0.9rem + 0.7vw, 1.5rem);
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--pantalla-cian);
+  }
+
+  .lista-llamados {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .tarjeta-llamado {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.25rem 1.5rem;
+    border-radius: var(--radio-lg);
+    background-color: var(--pantalla-tarjeta-destacada);
+    border: 2px solid var(--pantalla-borde);
+  }
+
+  .tarjeta-llamado--principal {
+    border-color: var(--pantalla-acento);
+    box-shadow: 0 0 0 2px rgb(250 204 21 / 0.25);
+  }
+
+  .llamado-codigo {
+    font-size: clamp(2.5rem, 1.8rem + 3vw, 4.75rem);
+    font-weight: 900;
+    line-height: 1;
+    color: var(--pantalla-acento);
+    letter-spacing: 0.03em;
+  }
+
+  .llamado-ventanilla {
+    font-size: clamp(1.5rem, 1.1rem + 1.5vw, 2.5rem);
+    font-weight: 800;
+    color: var(--pantalla-texto);
+  }
+
+  .tiempos-estimados-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.75rem;
+    margin-block-end: 1.25rem;
+  }
+
+  @media (max-width: 560px) {
+    .tiempos-estimados-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .tarjeta-estimado {
+    padding: 0.85rem;
+    border-radius: var(--radio-md);
+    background-color: var(--pantalla-tarjeta-destacada);
+    border: 1px solid var(--pantalla-borde);
+    text-align: center;
+  }
+
+  .estimado-servicio {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--pantalla-texto-suave);
+    margin-block-end: 0.25rem;
+  }
+
+  .estimado-valor {
+    font-size: clamp(1.35rem, 1rem + 1vw, 1.9rem);
+    font-weight: 900;
+    color: var(--pantalla-cian);
+  }
+
+  .lista-espera {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.65rem;
+  }
+
+  .item-espera {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.85rem 1rem;
+    border-radius: var(--radio-md);
+    background-color: var(--pantalla-tarjeta-destacada);
+    border: 1px solid var(--pantalla-borde);
+    font-size: 1.35rem;
+    font-weight: 800;
+  }
+
+  /* === VISTA 4: DASHBOARD EN TIEMPO REAL (dashboard.html) === */
+  .grid-kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-block-end: 1.25rem;
+  }
+
+  .tarjeta-kpi {
+    display: grid;
+    gap: 0.35rem;
+  }
+
+  .kpi-etiqueta {
+    font-size: 0.85rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-texto-suave);
+  }
+
+  .kpi-valor {
+    font-size: clamp(1.65rem, 1.25rem + 1.4vw, 2.5rem);
+    font-weight: 900;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-primario);
+  }
+
+  .grid-graficas {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 1.25rem;
+    margin-block-end: 1.25rem;
+  }
+
+  .contenedor-grafica {
+    position: relative;
+    min-block-size: 260px;
+  }
+
+  /* Barras HTML/CSS de respaldo si Chart.js CDN no carga en LAN sin internet */
+  .fallback-barras {
+    display: grid;
+    gap: 0.65rem;
+  }
+
+  .fallback-fila {
+    display: grid;
+    grid-template-columns: 110px 1fr auto;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .fallback-pista {
+    block-size: 14px;
+    border-radius: 999px;
+    background-color: var(--color-neutro-suave);
+    overflow: hidden;
+  }
+
+  .fallback-relleno {
+    block-size: 100%;
+    background-color: var(--color-primario);
+    border-radius: 999px;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * 5. Reglas de Impresión Térmica Epson 58 mm (@media print)
+ * -------------------------------------------------------------------------- */
+@page {
+  size: 58mm auto;
+  margin: 0;
+}
+
+@media print {
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    min-block-size: auto;
+    background: #ffffff;
+    color: #000000;
+  }
+
+  /* Ocultar absolutamente todo el contenido del body excepto #ticket-impresion */
+  body > :not(#ticket-impresion) {
+    display: none !important;
+  }
+
+  /* Contenedor útil de 48 mm centrado en el rollo térmico de 58 mm */
+  #ticket-impresion {
+    display: flex !important;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    inline-size: 48mm;
+    max-inline-size: 48mm;
+    margin: 0 auto;
+    padding-block: 3mm;
+    padding-inline: 1mm;
+    text-align: center;
+    background: #ffffff;
+    color: #000000;
+  }
+
+  /* Exclusivamente el código de turno en grande negrita y fecha/hora DD/MM/YY HH:mm */
+  #ticket-codigo {
+    margin: 0 0 2mm;
+    font-size: 36pt;
+    font-weight: 900;
+    line-height: 1.05;
+    letter-spacing: 0.04em;
+  }
+
+  #ticket-fecha {
+    margin: 0;
+    font-size: 11pt;
+    font-weight: 700;
+  }
+}
