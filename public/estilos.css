@@ -1,91 +1,64 @@
-/**
- * ============================================================================
- * Archivo: public/estilos.css (Paso 4 — Hoja de Estilos Compartida)
- * ----------------------------------------------------------------------------
- * Propósito general:
- *   Define el sistema visual completo de las cuatro vistas del Sistema de
- *   Turnos (kiosco.html, ventanilla.html, pantalla.html y dashboard.html),
- *   usando CSS3 puro sin frameworks externos ni selectores globales (*).
- *
- * Estructura en capas (@layer):
- *   1. tokens:     variables de diseño, paleta de servicios y alto contraste.
- *   2. base:       box-sizing por elementos, tipografía base y accesibilidad.
- *   3. components: tarjetas, botones táctiles, badges, tablas y modal <dialog>.
- *   4. views:      layouts responsivos específicos de las 4 interfaces.
- *   5. @media print: reglas exclusivas para impresora térmica 58 mm
- *                    (ancho útil 48 mm, márgenes 0, solo código y fecha/hora).
- *
- * Dependencias con otros módulos:
- *   - Referenciado vía <link rel="stylesheet" href="/estilos.css"> por todas
- *     las páginas HTML ubicadas en public/.
- * ============================================================================
- */
+/*
+  Hoja de estilos compartida para todas las pantallas del Sistema de Turnos.
 
-@layer tokens, base, components, views;
+  Organización del archivo:
+  1. Colores y tamaños base (tema oscuro azulado único para todas las vistas).
+  2. Ajustes básicos del documento (tipografía, enfoque con teclado y textos).
+  3. Piezas reutilizables (encabezado, paneles, botones, etiquetas, tablas y ventanas).
+  4. Ajustes por pantalla para monitores horizontales, pantallas verticales y celulares.
+  5. Reglas de impresión térmica de 58 mm (ticket en blanco y negro).
+*/
 
-/* --------------------------------------------------------------------------
- * 1. Tokens de Diseño
- * -------------------------------------------------------------------------- */
-@layer tokens {
+@layer base, componentes, pantallas;
+
+/* --- 1. Colores y medidas globales --- */
+
+:root {
+  color-scheme: dark;
+
+  --fuente-base: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --fuente-mono: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', monospace;
+
+  /* Tonos oscuros azulados compartidos por todo el sistema */
+  --fondo: #090f1d;
+  --superficie: #111b30;
+  --superficie-alt: #172542;
+  --borde: #26385e;
+  --texto: #f8fafc;
+  --texto-suave: #cbd5e1;
+
+  /* Colores de énfasis para números clave y alertas */
+  --cian: #38bdf8;
+  --amarillo: #facc15;
+
+  /* Colores de botones y servicios (con buen contraste para texto blanco) */
+  --primario: #1d4ed8;
+  --primario-hover: #2563eb;
+  --exito: #047857;
+  --exito-hover: #059669;
+  --alerta: #b45309;
+  --alerta-hover: #d97706;
+  --peligro: #b91c1c;
+  --peligro-hover: #dc2626;
+  --neutro: #334155;
+  --neutro-hover: #475569;
+
+  --radio-md: 12px;
+  --radio-lg: 16px;
+  --tamano-toque: 44px;
+}
+
+/* En pantallas táctiles aseguramos áreas mínimas cómodas para el dedo */
+@media (pointer: coarse) {
   :root {
-    /* Tipografía nativa del sistema para operación 100% offline en LAN */
-    --fuente-base: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-    --fuente-mono: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', monospace;
-
-    /* Paleta general clara para operación en mostrador, kiosco y supervisión */
-    --color-fondo: #f1f5f9;
-    --color-superficie: #ffffff;
-    --color-superficie-suave: #f8fafc;
-    --color-borde: #cbd5e1;
-    --color-texto: #0f172a;
-    --color-texto-suave: #475569;
-
-    /* Colores semánticos de acción y estado */
-    --color-primario: #1d4ed8;
-    --color-primario-hover: #1e40af;
-    --color-exito: #047857;
-    --color-exito-hover: #065f46;
-    --color-exito-suave: #ecfdf5;
-    --color-alerta: #b45309;
-    --color-alerta-hover: #92400e;
-    --color-alerta-suave: #fffbeb;
-    --color-peligro: #b91c1c;
-    --color-peligro-hover: #991b1b;
-    --color-peligro-suave: #fef2f2;
-    --color-neutro: #334155;
-    --color-neutro-suave: #e2e8f0;
-
-    /* Colores identificadores por tipo de servicio */
-    --color-caja: #1d4ed8;
-    --color-caja-suave: #eff6ff;
-    --color-ejecutivo: #047857;
-    --color-ejecutivo-suave: #ecfdf5;
-    --color-atencion: #b45309;
-    --color-atencion-suave: #fffbeb;
-
-    /* Alto contraste para pantalla pública de sala de espera */
-    --pantalla-fondo: #090f1d;
-    --pantalla-tarjeta: #111b30;
-    --pantalla-tarjeta-destacada: #172542;
-    --pantalla-borde: #26385e;
-    --pantalla-texto: #f8fafc;
-    --pantalla-texto-suave: #cbd5e1;
-    --pantalla-acento: #facc15;
-    --pantalla-cian: #38bdf8;
-
-    /* Geometría y elevación */
-    --radio-md: 12px;
-    --radio-lg: 18px;
-    --sombra-suave: 0 2px 8px rgb(15 23 42 / 0.06);
-    --sombra-media: 0 8px 24px rgb(15 23 42 / 0.12);
+    --tamano-toque: 48px;
   }
 }
 
-/* --------------------------------------------------------------------------
- * 2. Estilos Base (sin reset global *)
- * -------------------------------------------------------------------------- */
+/* --- 2. Base general del documento --- */
+
 @layer base {
-  /* Aplicamos border-box únicamente a elementos estructurales y controles */
+  /* Evitamos el selector universal (*) aplicando border-box solo a bloques y controles */
   :where(
     html,
     body,
@@ -95,30 +68,21 @@
     aside,
     article,
     nav,
-    footer,
     div,
     form,
-    fieldset,
     dialog,
     table,
-    thead,
-    tbody,
-    tr,
     th,
     td,
     ul,
-    ol,
     li,
     h1,
     h2,
     h3,
-    h4,
     p,
     span,
-    label,
-    button,
-    input,
-    select
+    a,
+    button
   ) {
     box-sizing: border-box;
   }
@@ -132,74 +96,91 @@
     margin: 0;
     min-block-size: 100dvh;
     font-family: var(--fuente-base);
-    background-color: var(--color-fondo);
-    color: var(--color-texto);
-    line-height: 1.45;
+    background-color: var(--fondo);
+    color: var(--texto);
+    line-height: 1.5;
+    overflow-wrap: break-word;
   }
 
   h1,
   h2,
   h3,
-  h4,
   p {
     margin-block-start: 0;
   }
 
+  figure {
+    margin: 0;
+  }
+
+  h1,
+  h2,
+  h3,
+  th {
+    text-wrap: balance;
+  }
+
+  p,
+  li {
+    text-wrap: pretty;
+  }
+
   button {
     font: inherit;
+    color: inherit;
     cursor: pointer;
     border: 1px solid transparent;
     border-radius: var(--radio-md);
-    transition: background-color 0.15s ease, transform 0.1s ease, border-color 0.15s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
   }
 
-  /* Indicador de foco claro para navegación por teclado y accesibilidad */
-  :where(button, input, select, a, [tabindex]):focus-visible {
-    outline: 3px solid var(--color-primario);
+  /* Contorno visible claro cuando alguien navega usando el teclado */
+  :where(button, a, [tabindex]):focus-visible {
+    outline: 3px solid var(--cian);
     outline-offset: 2px;
   }
 
-  /* Evita espacios residuales en canvas o elementos multimedia inline */
   canvas {
     display: block;
     max-inline-size: 100%;
   }
 }
 
-/* --------------------------------------------------------------------------
- * 3. Componentes Compartidos
- * -------------------------------------------------------------------------- */
-@layer components {
+/* --- 3. Componentes compartidos --- */
+
+@layer componentes {
+  /* Marco principal centrado con margen seguro en móviles, tabletas y monitores */
   .contenedor {
     inline-size: 100%;
-    max-inline-size: 1320px;
+    max-inline-size: 1360px;
     margin-inline: auto;
-    padding-inline: clamp(1rem, 2.5vw, 2rem);
-    padding-block: clamp(1rem, 2vw, 1.5rem);
+    padding-inline: clamp(0.85rem, 2.5vw, 2rem);
+    padding-block: clamp(0.75rem, 2vw, 1.35rem);
   }
 
-  /* Barra superior común para ventanilla, kiosco, pantalla y dashboard */
+  /* Barra superior con título a la izquierda e indicador en vivo y reloj a la derecha */
   .encabezado-vista {
     display: flex;
     flex-wrap: wrap;
     align-items: safe center;
     justify-content: space-between;
     gap: 0.75rem 1.25rem;
-    padding-block-end: 1rem;
-    margin-block-end: 1.25rem;
-    border-block-end: 1px solid var(--color-borde);
+    padding-block-end: 0.9rem;
+    margin-block-end: 1.15rem;
+    border-block-end: 1px solid var(--borde);
   }
 
   .encabezado-titulo {
     margin: 0;
-    font-size: clamp(1.35rem, 1rem + 1.2vw, 2rem);
+    font-size: clamp(1.25rem, 1rem + 1.1vw, 1.95rem);
     font-weight: 800;
     letter-spacing: -0.02em;
   }
 
-  .encabezado-subtitulo {
+  .encabezado-subtitulo,
+  .texto-suave {
     margin: 0.2rem 0 0;
-    color: var(--color-texto-suave);
+    color: var(--texto-suave);
     font-size: 0.95rem;
   }
 
@@ -207,75 +188,114 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.75rem;
+    gap: 0.65rem;
   }
 
-  /* Indicador de conexión SSE en tiempo real */
-  .estado-sse {
+  /* Píldora de estado SSE y reloj sincronizado del servidor */
+  .estado-sse,
+  .reloj-servidor {
     display: inline-flex;
     align-items: center;
     gap: 0.45rem;
     padding-block: 0.35rem;
     padding-inline: 0.75rem;
     border-radius: 999px;
-    font-size: 0.85rem;
+    background-color: var(--superficie);
+    border: 1px solid var(--borde);
+    font-size: 0.88rem;
     font-weight: 600;
-    background-color: var(--color-superficie);
-    border: 1px solid var(--color-borde);
+  }
+
+  .reloj-servidor {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
   }
 
   .indicador-punto {
     inline-size: 10px;
     block-size: 10px;
     border-radius: 50%;
-    background-color: var(--color-alerta);
+    background-color: #f59e0b;
   }
 
   .estado-sse--conectado .indicador-punto {
-    background-color: var(--color-exito);
+    background-color: #10b981;
   }
 
   .estado-sse--error .indicador-punto {
-    background-color: var(--color-peligro);
+    background-color: #ef4444;
   }
 
-  .reloj-servidor {
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    padding-block: 0.35rem;
-    padding-inline: 0.75rem;
-    border-radius: 999px;
-    background-color: var(--color-superficie);
-    border: 1px solid var(--color-borde);
-    font-size: 0.9rem;
-  }
-
-  /* Tarjeta contenedora genérica */
-  .tarjeta {
-    background-color: var(--color-superficie);
-    border: 1px solid var(--color-borde);
+  /* Contenedor tipo tarjeta con borde fino de 1px */
+  .panel {
+    background-color: var(--superficie);
+    border: 1px solid var(--borde);
     border-radius: var(--radio-lg);
-    padding: clamp(1rem, 2vw, 1.5rem);
-    box-shadow: var(--sombra-suave);
+    padding: clamp(0.95rem, 1.8vw, 1.4rem);
   }
 
-  .tarjeta-titulo {
+  .panel-titulo {
     margin: 0 0 0.75rem;
-    font-size: 1.1rem;
+    font-size: 1.08rem;
     font-weight: 700;
+    color: var(--texto);
   }
 
-  /* Botones de acción con área táctil mínima accesible (48px) */
+  /* Rejilla automática que se adapta sin desbordar ni siquiera en celulares de 320 px */
+  .rejilla-auto {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--min-col, 220px)), 1fr));
+    gap: 1rem;
+  }
+
+  /* Tarjeta clickeable usada tanto en el portal inicial como en el selector de ventanillas */
+  .tarjeta-opcion {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.55rem;
+    inline-size: 100%;
+    min-block-size: var(--tamano-toque);
+    padding: 1.15rem;
+    text-align: start;
+    text-decoration: none;
+    color: var(--texto);
+    background-color: var(--superficie);
+    border: 1px solid var(--borde);
+    border-radius: var(--radio-lg);
+  }
+
+  .tarjeta-opcion:hover:not(:disabled) {
+    background-color: var(--superficie-alt);
+    border-color: var(--cian);
+  }
+
+  .tarjeta-opcion:disabled {
+    background-color: #0d1527;
+    border-style: dashed;
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .opcion-titulo {
+    font-size: 1.2rem;
+    font-weight: 800;
+  }
+
+  /* Botones principales reutilizables */
   .btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 0.5rem;
-    min-block-size: 48px;
+    min-block-size: var(--tamano-toque);
+    min-inline-size: var(--tamano-toque);
     padding-block: 0.65rem;
-    padding-inline: 1.25rem;
+    padding-inline: 1.15rem;
     font-weight: 700;
     text-align: center;
+    text-decoration: none;
+    color: #ffffff;
   }
 
   .btn:active:not(:disabled) {
@@ -283,63 +303,52 @@
   }
 
   .btn:disabled {
-    opacity: 0.5;
+    opacity: 0.48;
     cursor: not-allowed;
   }
 
   .btn-primario {
-    background-color: var(--color-primario);
-    color: #ffffff;
+    background-color: var(--primario);
   }
-
   .btn-primario:hover:not(:disabled) {
-    background-color: var(--color-primario-hover);
+    background-color: var(--primario-hover);
   }
 
   .btn-exito {
-    background-color: var(--color-exito);
-    color: #ffffff;
+    background-color: var(--exito);
   }
-
   .btn-exito:hover:not(:disabled) {
-    background-color: var(--color-exito-hover);
+    background-color: var(--exito-hover);
   }
 
   .btn-alerta {
-    background-color: var(--color-alerta);
-    color: #ffffff;
+    background-color: var(--alerta);
   }
-
   .btn-alerta:hover:not(:disabled) {
-    background-color: var(--color-alerta-hover);
+    background-color: var(--alerta-hover);
   }
 
   .btn-peligro {
-    background-color: var(--color-peligro);
-    color: #ffffff;
+    background-color: var(--peligro);
   }
-
   .btn-peligro:hover:not(:disabled) {
-    background-color: var(--color-peligro-hover);
-  }
-
-  .btn-secundario {
-    background-color: var(--color-superficie);
-    color: var(--color-texto);
-    border-color: var(--color-borde);
-  }
-
-  .btn-secundario:hover:not(:disabled) {
-    background-color: var(--color-neutro-suave);
+    background-color: var(--peligro-hover);
   }
 
   .btn-neutro {
-    background-color: var(--color-neutro);
-    color: #ffffff;
+    background-color: var(--neutro);
+  }
+  .btn-neutro:hover:not(:disabled) {
+    background-color: var(--neutro-hover);
   }
 
-  .btn-neutro:hover:not(:disabled) {
-    background-color: #1e293b;
+  .btn-secundario {
+    background-color: var(--superficie-alt);
+    border-color: var(--borde);
+    color: var(--texto);
+  }
+  .btn-secundario:hover:not(:disabled) {
+    border-color: var(--cian);
   }
 
   .btn-encabezado {
@@ -349,160 +358,140 @@
     font-size: 0.88rem;
   }
 
-  /* Etiquetas de estado y servicio */
-  .badge {
+  /* Etiquetas identificadoras de servicio y estado adaptadas al fondo azul oscuro */
+  .etiqueta {
     display: inline-flex;
     align-items: center;
-    padding-block: 0.25rem;
+    padding-block: 0.22rem;
     padding-inline: 0.65rem;
     border-radius: 999px;
-    font-size: 0.8rem;
+    border: 1px solid transparent;
+    font-size: 0.78rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.03em;
   }
 
-  .badge--activo {
-    background-color: var(--color-exito-suave);
-    color: var(--color-exito);
+  .etiqueta--caja {
+    background-color: rgb(56 189 248 / 0.15);
+    border-color: rgb(56 189 248 / 0.35);
+    color: #93c5fd;
   }
 
-  .badge--pausa {
-    background-color: var(--color-alerta-suave);
-    color: var(--color-alerta);
+  .etiqueta--ejecutivo,
+  .etiqueta--activo {
+    background-color: rgb(16 185 129 / 0.16);
+    border-color: rgb(16 185 129 / 0.35);
+    color: #6ee7b7;
   }
 
-  .badge--cerrado {
-    background-color: var(--color-neutro-suave);
-    color: var(--color-neutro);
+  .etiqueta--atencion,
+  .etiqueta--pausa {
+    background-color: rgb(245 158 11 / 0.16);
+    border-color: rgb(245 158 11 / 0.35);
+    color: #fcd34d;
   }
 
-  .badge--caja {
-    background-color: var(--color-caja-suave);
-    color: var(--color-caja);
+  .etiqueta--cerrado {
+    background-color: rgb(148 163 184 / 0.14);
+    border-color: rgb(148 163 184 / 0.28);
+    color: var(--texto-suave);
   }
 
-  .badge--ejecutivo {
-    background-color: var(--color-ejecutivo-suave);
-    color: var(--color-ejecutivo);
-  }
-
-  .badge--atencion {
-    background-color: var(--color-atencion-suave);
-    color: var(--color-atencion);
-  }
-
-  /* Tabla responsiva con desplazamiento horizontal seguro */
+  /* Tablas con desplazamiento horizontal propio para que nunca rompan pantallas pequeñas */
   .tabla-envoltorio {
     inline-size: 100%;
     overflow-x: auto;
+    scrollbar-gutter: stable;
   }
 
   .tabla-datos {
     inline-size: 100%;
     border-collapse: collapse;
-    font-size: 0.95rem;
+    font-size: 0.94rem;
   }
 
   .tabla-datos th,
   .tabla-datos td {
-    padding-block: 0.7rem;
+    padding-block: 0.65rem;
     padding-inline: 0.75rem;
     text-align: start;
-    border-block-end: 1px solid var(--color-borde);
+    border-block-end: 1px solid var(--borde);
   }
 
   .tabla-datos th {
-    font-size: 0.82rem;
+    font-size: 0.8rem;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--color-texto-suave);
-    background-color: var(--color-superficie-suave);
+    color: var(--texto-suave);
+    background-color: var(--superficie-alt);
   }
 
   .tabla-datos td {
     font-variant-numeric: tabular-nums;
   }
 
-  /* Reglas obligatorias para <dialog> modal accesible:
-     - Nunca definir display fuera de dialog[open] para no romper el estado cerrado.
-     - Bloquear scroll del documento subyacente con overscroll-behavior: contain. */
-  :where(dialog.modal-error, dialog.modal-dialogo) {
-    inline-size: min(92%, 480px);
+  /* Ventanas modales nativas (<dialog>): evitamos poner display fuera de [open]
+     y contenemos el desplazamiento para no mover el fondo al desplazarse dentro */
+  dialog.modal {
+    inline-size: min(92%, 500px);
     margin: auto;
     padding: 0;
-    border: 2px solid var(--color-primario);
+    border: 1px solid var(--cian);
     border-radius: var(--radio-lg);
-    background-color: var(--color-superficie);
-    color: var(--color-texto);
-    box-shadow: var(--sombra-media);
+    background-color: var(--superficie);
+    color: var(--texto);
   }
 
   dialog.modal-error {
-    border-color: var(--color-peligro);
+    border-color: #ef4444;
   }
 
-  :where(dialog.modal-error, dialog.modal-dialogo)[open] {
+  dialog.modal[open] {
     display: grid;
     gap: 1rem;
-    padding: 1.5rem;
+    padding: 1.4rem;
   }
 
-  :where(dialog.modal-error, dialog.modal-dialogo):modal {
+  dialog.modal:modal {
     overscroll-behavior: contain;
   }
 
-  :where(dialog.modal-error, dialog.modal-dialogo)::backdrop {
+  dialog.modal::backdrop {
     overflow: hidden;
     overscroll-behavior: contain;
-    background-color: rgb(15 23 42 / 0.65);
+    background-color: rgb(4 8 18 / 0.78);
   }
 
-  .modal-error-titulo,
-  .modal-dialogo-titulo {
+  .modal-titulo {
     margin: 0;
     font-size: 1.25rem;
     font-weight: 800;
   }
 
-  .modal-error-titulo {
-    color: var(--color-peligro);
+  .modal-error .modal-titulo {
+    color: #fca5a5;
   }
 
-  .modal-dialogo-titulo {
-    color: var(--color-texto);
-  }
-
-  .modal-error-texto {
-    margin: 0;
-    color: var(--color-texto);
-    font-size: 1rem;
-  }
-
-  .modal-opciones-cierre {
+  .modal-opciones {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-    gap: 0.85rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+    gap: 0.75rem;
   }
 
-  .modal-opciones-cierre .btn {
-    min-block-size: 68px;
-    padding-block: 1rem;
-    padding-inline: 1.25rem;
-    font-size: 1.1rem;
+  .modal-opciones .btn {
+    min-block-size: 62px;
+    font-size: 1.05rem;
     font-weight: 800;
-    border-radius: var(--radio-lg);
   }
 
-  .modal-error-acciones {
+  .modal-acciones {
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 0.65rem;
-    margin-block-start: 0.25rem;
   }
 
-  /* Elemento oculto en pantalla normal; visible únicamente al imprimir en @media print */
   .solo-impresion {
     display: none;
   }
@@ -512,31 +501,30 @@
   }
 }
 
-/* --------------------------------------------------------------------------
- * 4. Estilos Específicos por Vista
- * -------------------------------------------------------------------------- */
-@layer views {
-  /* === VISTA 1: KIOSCO DE TURNOS (kiosco.html) === */
+/* --- 4. Reglas específicas por vista y adaptabilidad por formato --- */
+
+@layer pantallas {
+  /* === KIOSCO (horizontal, tótem vertical y celular) === */
   .vista-kiosco .kiosco-principal {
-    min-block-size: calc(100dvh - 3rem);
+    min-block-size: calc(100dvh - 8.5rem);
     display: flex;
     flex-direction: column;
     justify-content: center;
-    gap: 1.5rem;
+    gap: 1.35rem;
   }
 
   .kiosco-instruccion {
     text-align: center;
-    font-size: clamp(1.2rem, 1rem + 1vw, 1.75rem);
+    font-size: clamp(1.1rem, 0.95rem + 0.9vw, 1.65rem);
     font-weight: 700;
-    color: var(--color-texto-suave);
+    color: var(--texto-suave);
     margin: 0;
   }
 
   .kiosco-opciones {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 1.25rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+    gap: 1.15rem;
   }
 
   .btn-kiosco {
@@ -544,250 +532,195 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 0.6rem;
-    min-block-size: 200px;
-    padding: 1.5rem;
+    gap: 0.55rem;
+    min-block-size: clamp(150px, 24dvh, 220px);
+    padding: 1.4rem;
     border-radius: var(--radio-lg);
-    border: 2px solid transparent;
-    box-shadow: var(--sombra-media);
     color: #ffffff;
   }
 
   .btn-kiosco--caja {
-    background-color: var(--color-caja);
+    background-color: var(--primario);
   }
-
   .btn-kiosco--caja:hover:not(:disabled) {
-    background-color: var(--color-primario-hover);
+    background-color: var(--primario-hover);
   }
 
   .btn-kiosco--ejecutivo {
-    background-color: var(--color-ejecutivo);
+    background-color: var(--exito);
   }
-
   .btn-kiosco--ejecutivo:hover:not(:disabled) {
-    background-color: var(--color-exito-hover);
+    background-color: var(--exito-hover);
   }
 
   .btn-kiosco--atencion {
-    background-color: var(--color-atencion);
+    background-color: var(--alerta);
   }
-
   .btn-kiosco--atencion:hover:not(:disabled) {
-    background-color: var(--color-alerta-hover);
+    background-color: var(--alerta-hover);
   }
 
   .btn-kiosco-letra {
     display: grid;
     place-items: center;
-    inline-size: 64px;
-    block-size: 64px;
+    inline-size: 60px;
+    block-size: 60px;
     border-radius: 50%;
-    background-color: rgb(255 255 255 / 0.2);
-    font-size: 2rem;
+    background-color: rgb(255 255 255 / 0.18);
+    font-size: 1.85rem;
     font-weight: 900;
   }
 
   .btn-kiosco-nombre {
-    font-size: clamp(1.35rem, 1.1rem + 0.9vw, 1.85rem);
+    font-size: clamp(1.25rem, 1rem + 0.9vw, 1.8rem);
     font-weight: 800;
   }
 
   .btn-kiosco-desc {
     font-size: 0.95rem;
-    opacity: 0.92;
-    font-weight: 500;
+    color: rgb(255 255 255 / 0.92);
   }
 
-  /* Tarjeta temporal de confirmación en pantalla durante los 3 segundos de retorno */
+  /* En pantallas verticales tipo tótem los 3 botones aprovechan toda la columna */
+  @media (orientation: portrait) {
+    .kiosco-opciones {
+      grid-template-columns: 1fr;
+    }
+    .btn-kiosco {
+      min-block-size: clamp(120px, 19dvh, 190px);
+    }
+  }
+
   .kiosco-confirmacion {
     text-align: center;
-    max-inline-size: 520px;
+    max-inline-size: 500px;
+    inline-size: 100%;
     margin-inline: auto;
-    padding: 2rem;
-    border: 2px solid var(--color-primario);
+    padding: 2rem 1.5rem;
+    border-color: var(--cian);
   }
 
   .kiosco-confirmacion-codigo {
     font-size: clamp(3rem, 2.2rem + 3vw, 4.75rem);
     font-weight: 900;
-    color: var(--color-primario);
+    color: var(--amarillo);
     line-height: 1.05;
-    margin-block: 0.5rem;
+    margin-block: 0.45rem;
   }
 
-  /* === VISTA 2: PANEL DE VENTANILLA (ventanilla.html) === */
-  .grid-ventanillas {
+  /* === PANEL DE VENTANILLA (diseñado para verse completo en una pantalla) === */
+  .rejilla-dividida {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 1rem;
-  }
-
-  .tarjeta-ventanilla-opcion {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.65rem;
-    inline-size: 100%;
-    padding: 1.25rem;
-    text-align: start;
-    background-color: var(--color-superficie);
-    border: 2px solid var(--color-borde);
-    border-radius: var(--radio-lg);
-    color: var(--color-texto);
-    box-shadow: var(--sombra-suave);
-  }
-
-  .tarjeta-ventanilla-opcion:hover:not(:disabled) {
-    border-color: var(--color-primario);
-    background-color: var(--color-caja-suave);
-  }
-
-  .tarjeta-ventanilla-opcion:disabled {
-    background-color: var(--color-superficie-suave);
-    border-style: dashed;
-    opacity: 0.65;
-    cursor: not-allowed;
-  }
-
-  .ventanilla-nombre {
-    font-size: 1.25rem;
-    font-weight: 800;
-  }
-
-  /* Panel operativo ajustado a una sola pantalla:
-     - Columna izquierda: atención actual + 4 botones grandes de estado.
-     - Columna derecha: caja de ventanilla/tiempo activo + fila de espera con scroll interno. */
-  .vista-ventanilla .contenedor {
-    padding-block: 0.75rem;
-  }
-
-  .vista-ventanilla .encabezado-vista {
-    padding-block-end: 0.65rem;
-    margin-block-end: 0.85rem;
-  }
-
-  .ventanilla-panel-grid {
-    display: grid;
-    grid-template-columns: 1.45fr 1fr;
+    grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
     gap: 1rem;
     align-items: start;
   }
 
-  @media (max-width: 880px) {
-    .ventanilla-panel-grid {
-      grid-template-columns: 1fr;
-    }
+  .rejilla-dividida > * {
+    min-inline-size: 0;
   }
 
-  .ventanilla-tarjeta-principal {
-    padding: 1.15rem 1.35rem;
+  @media (max-width: 880px), (orientation: portrait) {
+    .rejilla-dividida {
+      grid-template-columns: 1fr;
+    }
   }
 
   .ventanilla-atencion-cabecera {
     display: flex;
     flex-wrap: wrap;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 0.5rem 1rem;
-    margin-block-end: 0.5rem;
+    margin-block-end: 0.65rem;
   }
 
-  .ventanilla-atencion-cabecera .tarjeta-titulo {
+  .ventanilla-atencion-cabecera .panel-titulo {
     margin: 0;
   }
 
   .turno-actual-resumen {
     display: flex;
     flex-wrap: wrap;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 0.5rem 1rem;
-    padding: 0.65rem 1rem;
+    padding: 0.75rem 1rem;
     border-radius: var(--radio-md);
-    background-color: var(--color-caja-suave);
-    border: 1px solid var(--color-borde);
-    margin-block-end: 0.75rem;
+    background-color: var(--superficie-alt);
+    border: 1px solid var(--borde);
+    margin-block-end: 0.85rem;
   }
 
   .turno-actual-codigo {
-    font-size: clamp(2.4rem, 1.9rem + 2vw, 3.4rem);
+    font-size: clamp(2.2rem, 1.7rem + 2vw, 3.3rem);
     font-weight: 900;
-    color: var(--color-primario);
+    color: var(--amarillo);
     line-height: 1;
     margin: 0;
   }
 
-  .ventanilla-subtitulo-cierre {
-    margin-block: 0 0.6rem;
-    font-size: 1rem;
-  }
-
-  /* Cuadrícula de 2x2 con botones grandes para los 4 estados de cierre directo */
   .grupo-botones-cierre {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 0.85rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.8rem;
     margin-block: 0 0.85rem;
   }
 
-  @media (max-width: 520px) {
+  .grupo-botones-cierre .btn {
+    min-block-size: clamp(68px, 10dvh, 88px);
+    padding-block: 0.9rem;
+    font-size: clamp(1.05rem, 0.95rem + 0.35vw, 1.32rem);
+    font-weight: 800;
+    border-radius: var(--radio-lg);
+  }
+
+  @media (max-width: 400px) {
     .grupo-botones-cierre {
       grid-template-columns: 1fr;
     }
   }
 
-  .grupo-botones-cierre .btn {
-    min-block-size: 84px;
-    padding-block: 1.15rem;
-    padding-inline: 1.25rem;
-    font-size: clamp(1.18rem, 1rem + 0.4vw, 1.38rem);
-    font-weight: 800;
-    border-radius: var(--radio-lg);
-    box-shadow: var(--sombra-suave);
-  }
-
   .separador-pausa {
-    padding-block-start: 0.75rem;
-    border-block-start: 1px solid var(--color-borde);
+    padding-block-start: 0.8rem;
+    border-block-start: 1px solid var(--borde);
   }
 
-  .separador-pausa .btn {
-    min-block-size: 52px;
-    font-size: 1.05rem;
-  }
-
-  .acciones-ventanilla {
+  .acciones-fila {
     display: flex;
     flex-wrap: wrap;
     gap: 0.75rem;
   }
 
-  .acciones-ventanilla .btn {
+  .acciones-fila .btn {
     flex: 1 1 180px;
   }
 
-  /* Columna lateral derecha: información de ventanilla/tiempo activo + próximos en fila */
-  .ventanilla-columna-lateral {
+  .ventanilla-lateral {
     display: grid;
     gap: 1rem;
   }
 
-  .ventanilla-barra-operativa {
+  .ventanilla-resumen {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem 1rem;
-    padding: 1rem 1.25rem;
   }
 
-  .ventanilla-barra-operativa .tarjeta-titulo {
+  .ventanilla-resumen .panel-titulo {
     margin-block-end: 0.35rem;
   }
 
-  .ventanilla-tiempo-caja {
+  .ventanilla-tiempo {
     text-align: end;
+  }
+
+  @media (max-width: 480px) {
+    .ventanilla-tiempo {
+      text-align: start;
+    }
   }
 
   .ventanilla-cronometro {
@@ -795,71 +728,31 @@
     font-size: 1.45rem;
     font-weight: 800;
     font-variant-numeric: tabular-nums;
+    color: var(--cian);
     margin: 0.15rem 0 0;
   }
 
-  .ventanilla-tarjeta-fila {
-    padding: 1rem 1.25rem;
-  }
-
   .ventanilla-tabla-scroll {
-    max-block-size: 250px;
+    max-block-size: 240px;
     overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
-  /* === VISTA 3: PANTALLA PÚBLICA DE SALA DE ESPERA (pantalla.html) === */
-  body.vista-pantalla {
-    background-color: var(--pantalla-fondo);
-    color: var(--pantalla-texto);
-  }
-
-  .vista-pantalla .encabezado-vista {
-    border-block-end-color: var(--pantalla-borde);
-  }
-
-  .vista-pantalla .encabezado-subtitulo {
-    color: var(--pantalla-texto-suave);
-  }
-
-  .vista-pantalla .estado-sse,
-  .vista-pantalla .reloj-servidor {
-    background-color: var(--pantalla-tarjeta);
-    border-color: var(--pantalla-borde);
-    color: var(--pantalla-texto);
-  }
-
-  .pantalla-grid {
-    display: grid;
-    grid-template-columns: 1.55fr 1fr;
-    gap: 1.5rem;
-    align-items: start;
-  }
-
-  @media (max-width: 900px) {
-    .pantalla-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .pantalla-panel {
-    background-color: var(--pantalla-tarjeta);
-    border: 1px solid var(--pantalla-borde);
-    border-radius: var(--radio-lg);
-    padding: 1.25rem;
-  }
-
-  .pantalla-panel-titulo {
-    margin: 0 0 1rem;
-    font-size: clamp(1.1rem, 0.9rem + 0.7vw, 1.5rem);
+  /* === PANTALLA PÚBLICA DE SALA DE ESPERA (horizontal y vertical sin scroll) === */
+  .pantalla-titulo {
+    margin: 0 0 0.85rem;
+    font-size: clamp(1rem, 0.88rem + 0.55vw, 1.35rem);
     font-weight: 800;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--pantalla-cian);
+    color: var(--cian);
   }
 
+  /* Muestra el llamado más reciente arriba a lo ancho y hasta 6 ventanillas más en 2 columnas */
   .lista-llamados {
     display: grid;
-    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+    gap: 0.85rem;
   }
 
   .tarjeta-llamado {
@@ -867,66 +760,93 @@
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 1rem;
-    padding: 1.25rem 1.5rem;
+    gap: 0.45rem 0.85rem;
+    padding: clamp(0.65rem, 1vw, 0.9rem) clamp(0.9rem, 1.3vw, 1.15rem);
     border-radius: var(--radio-lg);
-    background-color: var(--pantalla-tarjeta-destacada);
-    border: 2px solid var(--pantalla-borde);
+    background-color: var(--superficie-alt);
+    border: 1px solid var(--borde);
   }
 
   .tarjeta-llamado--principal {
-    border-color: var(--pantalla-acento);
-    box-shadow: 0 0 0 2px rgb(250 204 21 / 0.25);
+    grid-column: 1 / -1;
+    padding: clamp(0.9rem, 1.4vw, 1.25rem) clamp(1rem, 1.6vw, 1.4rem);
+    border-color: var(--amarillo);
+    box-shadow: 0 0 0 1px rgb(250 204 21 / 0.35);
   }
 
   .llamado-codigo {
-    font-size: clamp(2.5rem, 1.8rem + 3vw, 4.75rem);
+    font-size: clamp(1.6rem, 1.25rem + 1.3vw, 2.4rem);
     font-weight: 900;
-    line-height: 1;
-    color: var(--pantalla-acento);
+    line-height: 1.05;
+    color: var(--amarillo);
     letter-spacing: 0.03em;
+    margin-block-end: 0.2rem;
+  }
+
+  .tarjeta-llamado--principal .llamado-codigo {
+    font-size: clamp(2.4rem, 1.8rem + 2.6vw, 4.1rem);
   }
 
   .llamado-ventanilla {
-    font-size: clamp(1.5rem, 1.1rem + 1.5vw, 2.5rem);
+    font-size: clamp(1.05rem, 0.9rem + 0.75vw, 1.45rem);
     font-weight: 800;
-    color: var(--pantalla-texto);
+    color: var(--texto);
+  }
+
+  .tarjeta-llamado--principal .llamado-ventanilla {
+    font-size: clamp(1.4rem, 1.1rem + 1.3vw, 2.2rem);
+  }
+
+  /* Resalte suave al llegar un nuevo llamado (se desactiva si el sistema pide menos movimiento) */
+  @media (prefers-reduced-motion: no-preference) {
+    @keyframes pulso-llamado {
+      0% {
+        box-shadow: 0 0 0 0 rgb(250 204 21 / 0.75);
+      }
+      100% {
+        box-shadow: 0 0 0 14px rgb(250 204 21 / 0);
+      }
+    }
+
+    .tarjeta-llamado--nuevo {
+      animation: pulso-llamado 1.1s ease-out 2;
+    }
   }
 
   .tiempos-estimados-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 0.75rem;
-    margin-block-end: 1.25rem;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.65rem;
+    margin-block-end: 1.1rem;
   }
 
-  @media (max-width: 560px) {
+  @media (max-width: 460px) {
     .tiempos-estimados-grid {
       grid-template-columns: 1fr;
     }
   }
 
   .tarjeta-estimado {
-    padding: 0.85rem;
+    padding: 0.75rem 0.6rem;
     border-radius: var(--radio-md);
-    background-color: var(--pantalla-tarjeta-destacada);
-    border: 1px solid var(--pantalla-borde);
+    background-color: var(--superficie-alt);
+    border: 1px solid var(--borde);
     text-align: center;
   }
 
   .estimado-servicio {
     display: block;
-    font-size: 0.85rem;
+    font-size: 0.78rem;
     font-weight: 700;
     text-transform: uppercase;
-    color: var(--pantalla-texto-suave);
-    margin-block-end: 0.25rem;
+    color: var(--texto-suave);
+    margin-block-end: 0.2rem;
   }
 
   .estimado-valor {
-    font-size: clamp(1.35rem, 1rem + 1vw, 1.9rem);
+    font-size: clamp(1.25rem, 1rem + 0.9vw, 1.75rem);
     font-weight: 900;
-    color: var(--pantalla-cian);
+    color: var(--cian);
   }
 
   .lista-espera {
@@ -934,63 +854,72 @@
     margin: 0;
     padding: 0;
     display: grid;
-    gap: 0.65rem;
+    grid-template-columns: 1fr;
+    gap: 0.55rem;
+  }
+
+  @media (orientation: portrait) and (min-width: 560px) {
+    .lista-espera {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
   }
 
   .item-espera {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.75rem;
-    padding: 0.85rem 1rem;
+    gap: 0.65rem;
+    padding: 0.7rem 0.9rem;
     border-radius: var(--radio-md);
-    background-color: var(--pantalla-tarjeta-destacada);
-    border: 1px solid var(--pantalla-borde);
-    font-size: 1.35rem;
+    background-color: var(--superficie-alt);
+    border: 1px solid var(--borde);
+    font-size: 1.2rem;
     font-weight: 800;
   }
 
-  /* === VISTA 4: DASHBOARD EN TIEMPO REAL (dashboard.html) === */
+  /* === DASHBOARD EN TIEMPO REAL === */
   .grid-kpis {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 1rem;
-    margin-block-end: 1.25rem;
+    --min-col: 185px;
+    margin-block-end: 1.15rem;
   }
 
   .tarjeta-kpi {
     display: grid;
-    gap: 0.35rem;
+    gap: 0.3rem;
   }
 
   .kpi-etiqueta {
-    font-size: 0.85rem;
+    font-size: 0.82rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--color-texto-suave);
+    color: var(--texto-suave);
   }
 
   .kpi-valor {
-    font-size: clamp(1.65rem, 1.25rem + 1.4vw, 2.5rem);
+    font-size: clamp(1.55rem, 1.2rem + 1.3vw, 2.3rem);
     font-weight: 900;
     font-variant-numeric: tabular-nums;
-    color: var(--color-primario);
+    color: var(--cian);
   }
 
   .grid-graficas {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    gap: 1.25rem;
-    margin-block-end: 1.25rem;
+    --min-col: 300px;
+    margin-block-end: 1.15rem;
   }
 
   .contenedor-grafica {
     position: relative;
-    min-block-size: 260px;
+    inline-size: 100%;
+    block-size: 250px;
+    margin-block-end: 0.75rem;
   }
 
-  /* Barras HTML/CSS de respaldo si Chart.js CDN no carga en LAN sin internet */
+  /* Cuando no hay datos del día todavía, evitamos dejar un rectángulo vacío gigante */
+  .contenedor-grafica--vacia {
+    block-size: auto;
+  }
+
   .fallback-barras {
     display: grid;
     gap: 0.65rem;
@@ -998,30 +927,38 @@
 
   .fallback-fila {
     display: grid;
-    grid-template-columns: 110px 1fr auto;
+    grid-template-columns: minmax(95px, 120px) 1fr auto;
     align-items: center;
-    gap: 0.75rem;
+    gap: 0.65rem;
     font-size: 0.9rem;
     font-weight: 600;
   }
 
+  @media (max-width: 440px) {
+    .fallback-fila {
+      grid-template-columns: 1fr auto;
+    }
+    .fallback-pista {
+      grid-column: 1 / -1;
+    }
+  }
+
   .fallback-pista {
-    block-size: 14px;
+    block-size: 12px;
     border-radius: 999px;
-    background-color: var(--color-neutro-suave);
+    background-color: var(--superficie-alt);
     overflow: hidden;
   }
 
   .fallback-relleno {
     block-size: 100%;
-    background-color: var(--color-primario);
+    background-color: var(--cian);
     border-radius: 999px;
   }
 }
 
-/* --------------------------------------------------------------------------
- * 5. Reglas de Impresión Térmica Epson 58 mm (@media print)
- * -------------------------------------------------------------------------- */
+/* --- 5. Reglas exclusivas para impresora térmica de 58 mm --- */
+
 @page {
   size: 58mm auto;
   margin: 0;
@@ -1037,12 +974,12 @@
     color: #000000;
   }
 
-  /* Ocultar absolutamente todo el contenido del body excepto #ticket-impresion */
+  /* Oculta botones y textos de pantalla; deja visible únicamente el diseño del ticket */
   body > :not(#ticket-impresion) {
     display: none !important;
   }
 
-  /* Contenedor útil de 48 mm centrado en el rollo térmico de 58 mm */
+  /* Ancho útil de 48 mm centrado dentro del rollo térmico de 58 mm */
   #ticket-impresion {
     display: flex !important;
     flex-direction: column;
@@ -1058,7 +995,6 @@
     color: #000000;
   }
 
-  /* Exclusivamente el código de turno en grande negrita y fecha/hora DD/MM/YY HH:mm */
   #ticket-codigo {
     margin: 0 0 2mm;
     font-size: 36pt;

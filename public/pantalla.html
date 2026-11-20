@@ -1,26 +1,14 @@
 <!DOCTYPE html>
 <html lang="es">
 <!--
-===============================================================================
-Archivo: public/pantalla.html (Paso 7 — Pantalla Pública de Sala de Espera)
--------------------------------------------------------------------------------
-Propósito general:
-  Tablero público de alta visibilidad diseñado para monitores o televisores
-  en sala de espera (operación desatendida sin teclado ni mouse):
-    1. Muestra en tipografía grande los turnos actualmente llamados y la
-       ventanilla asignada (destacando el llamado más reciente).
-    2. Muestra los tiempos estimados de espera por servicio (Caja, Ejecutivo
-       y Atención a Cliente) y la fila cronológica FIFO de próximos turnos.
-    3. Sincroniza en tiempo real (< 1 s) vía Server-Sent Events (GET /api/eventos).
-    4. Sintetiza un timbre de notificación con Web Audio API (AudioContext) al
-       detectar un nuevo turno llamado, preparado para ejecutarse en navegador
-       con --autoplay-policy=no-user-gesture-required.
+  Pantalla Pública para la sala de espera (pensada para un monitor o televisor).
 
-Dependencias con otros módulos:
-  - /estilos.css: paleta de alto contraste (.vista-pantalla) y diseño fluido.
-  - GET /api/estado: snapshot inicial al abrir o recuperar conexión.
-  - GET /api/eventos: canal SSE para actualizaciones instantáneas y llamados.
-===============================================================================
+  Funciona totalmente sola sin teclado ni mouse:
+  - Muestra en grande los turnos que están siendo llamados y a qué ventanilla pasar.
+  - Muestra el tiempo aproximado de espera de cada servicio y los próximos turnos en fila.
+  - Se actualiza al instante cada vez que cambia algo en el sistema.
+  - Reproduce un timbre suave ("din-don") generado por el propio navegador cuando
+    llama a un turno nuevo, sin depender de archivos de sonido externos.
 -->
 <head>
   <meta charset="UTF-8">
@@ -40,22 +28,22 @@ Dependencias con otros módulos:
           <span class="indicador-punto" aria-hidden="true"></span>
           <span id="texto-sse">Conectando...</span>
         </span>
-        <span id="reloj-servidor" class="reloj-servidor" aria-label="Fecha y hora del servidor">--/--/-- --:--</span>
+        <span id="reloj-servidor" class="reloj-servidor" aria-label="Fecha y hora del sistema">--/--/-- --:--</span>
       </div>
     </header>
 
-    <main class="pantalla-grid">
-      <!-- Columna principal: Turnos llamados / en atención actualmente -->
-      <section class="pantalla-panel" aria-labelledby="titulo-llamados">
-        <h2 id="titulo-llamados" class="pantalla-panel-titulo">Turnos Llamados</h2>
+    <main class="rejilla-dividida">
+      <!-- Turnos que se están atendiendo en este momento -->
+      <section class="panel" aria-labelledby="titulo-llamados">
+        <h2 id="titulo-llamados" class="pantalla-titulo">Turnos Llamados</h2>
         <div id="lista-llamados" class="lista-llamados" aria-live="polite">
-          <p class="encabezado-subtitulo">Cargando turnos...</p>
+          <p class="texto-suave">Cargando turnos...</p>
         </div>
       </section>
 
-      <!-- Columna lateral: Tiempos estimados por servicio y próximos en fila -->
-      <aside class="pantalla-panel" aria-labelledby="titulo-espera">
-        <h2 id="titulo-espera" class="pantalla-panel-titulo">Tiempo Estimado de Espera</h2>
+      <!-- Tiempos aproximados de espera y lista de espera en orden de llegada -->
+      <aside class="panel" aria-labelledby="titulo-espera">
+        <h2 id="titulo-espera" class="pantalla-titulo">Tiempo Estimado de Espera</h2>
 
         <div class="tiempos-estimados-grid">
           <div class="tarjeta-estimado">
@@ -72,317 +60,212 @@ Dependencias con otros módulos:
           </div>
         </div>
 
-        <h3 class="pantalla-panel-titulo">Próximos en Espera</h3>
-        <p id="espera-vacia" class="encabezado-subtitulo">No hay turnos en espera.</p>
+        <h2 class="pantalla-titulo">Próximos en Espera</h2>
+        <p id="espera-vacia" class="texto-suave">No hay turnos en espera.</p>
         <ul id="lista-espera" class="lista-espera"></ul>
-        <p id="espera-restantes" class="encabezado-subtitulo oculto"></p>
+        <p id="espera-restantes" class="texto-suave oculto"></p>
       </aside>
     </main>
   </div>
 
+  <script src="/comun.js"></script>
   <script>
-    /**
-     * Lógica de la Pantalla Pública (Vanilla ES6+ sin dependencias).
-     * Características clave:
-     *   - Carga inicial con GET /api/estado + stream SSE en GET /api/eventos.
-     *   - Timbre sintetizado vía Web Audio API sin archivos de audio externos.
-     *   - Control de clave del último llamado para no repetir sonido al recargar.
-     */
-    (function inicializarPantalla() {
-      // Límite visible de turnos en espera para evitar desbordamiento en TV.
-      const MAX_ESPERA_VISIBLE = 10;
+    const UI = window.TurnosUI;
+    const MAX_ESPERA_VISIBLE = 10;
 
-      const NOMBRES_SERVICIO = {
-        caja: 'Caja',
-        ejecutivo: 'Ejecutivo',
-        atencion: 'Atención a Cliente'
-      };
+    const listaLlamados = document.getElementById('lista-llamados');
+    const estimadoCaja = document.getElementById('estimado-caja');
+    const estimadoEjecutivo = document.getElementById('estimado-ejecutivo');
+    const estimadoAtencion = document.getElementById('estimado-atencion');
+    const esperaVacia = document.getElementById('espera-vacia');
+    const listaEspera = document.getElementById('lista-espera');
+    const esperaRestantes = document.getElementById('espera-restantes');
 
-      // Referencias del DOM.
-      const estadoSSE = document.getElementById('estado-sse');
-      const textoSSE = document.getElementById('texto-sse');
-      const relojServidor = document.getElementById('reloj-servidor');
-      const listaLlamados = document.getElementById('lista-llamados');
-      const estimadoCaja = document.getElementById('estimado-caja');
-      const estimadoEjecutivo = document.getElementById('estimado-ejecutivo');
-      const estimadoAtencion = document.getElementById('estimado-atencion');
-      const esperaVacia = document.getElementById('espera-vacia');
-      const listaEspera = document.getElementById('lista-espera');
-      const esperaRestantes = document.getElementById('espera-restantes');
+    const reloj = UI.crearReloj(document.getElementById('reloj-servidor'));
+    let contextoAudio = null;
+    // Recordamos el último llamado que ya sonó para no repetir el timbre al recargar la página.
+    let ultimoLlamadoSonado = null;
 
-      // Estado de reloj sincronizado y referencia única de AudioContext.
-      let desfaseServidorMs = 0;
-      let audioCtx = null;
-      let fuenteEventos = null;
-      // Guarda "id-hora_llamado" del último llamado que ya sonó para evitar duplicados.
-      let ultimoLlamadoSonado = null;
+    // Prepara el generador de audio del navegador. Cuando el televisor abre Chrome en modo kiosco
+    // con permiso automático de audio, suena directo sin necesidad de hacer clic primero.
+    function obtenerAudio() {
+      const AudioCtor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtor) return null;
+      if (!contextoAudio) {
+        contextoAudio = new AudioCtor();
+      }
+      return contextoAudio;
+    }
 
-      /**
-       * Formatea una marca en milisegundos como DD/MM/YY HH:mm sin zonas horarias.
-       *
-       * @param {number} ms - Milisegundos del servidor.
-       * @returns {string} Fecha y hora en formato DD/MM/YY HH:mm.
-       */
-      function formatearFechaHora(ms) {
-        return new Date(ms)
-          .toLocaleString('es-MX', {
-            dateStyle: 'short',
-            timeStyle: 'short',
-            hour12: false
+    // Genera un timbre suave de dos tonos ("din-don") mediante ondas de sonido del navegador.
+    async function reproducirTimbre() {
+      const audio = obtenerAudio();
+      if (!audio) return;
+
+      try {
+        if (audio.state === 'suspended') {
+          await audio.resume();
+        }
+
+        const inicio = audio.currentTime;
+        const notas = [
+          { frecuencia: 659.25, retraso: 0, duracion: 0.35 },
+          { frecuencia: 880.0, retraso: 0.18, duracion: 0.55 }
+        ];
+
+        for (const nota of notas) {
+          const oscilador = audio.createOscillator();
+          const volumen = audio.createGain();
+
+          oscilador.type = 'sine';
+          oscilador.frequency.setValueAtTime(nota.frecuencia, inicio + nota.retraso);
+
+          // Subimos rápido el volumen y lo bajamos poco a poco para evitar chasquidos.
+          volumen.gain.setValueAtTime(0.001, inicio + nota.retraso);
+          volumen.gain.exponentialRampToValueAtTime(0.28, inicio + nota.retraso + 0.02);
+          volumen.gain.exponentialRampToValueAtTime(0.001, inicio + nota.retraso + nota.duracion);
+
+          oscilador.connect(volumen);
+          volumen.connect(audio.destination);
+
+          oscilador.start(inicio + nota.retraso);
+          oscilador.stop(inicio + nota.retraso + nota.duracion + 0.02);
+        }
+      } catch (_) {
+        // Si se abrió manualmente sin permiso de autoplay, evitamos mostrar errores en consola.
+      }
+    }
+
+    // Dibuja los turnos actualmente en atención (el más reciente va destacado al principio).
+    function dibujarLlamados(turnosAtendiendo, esNuevoLlamado) {
+      listaLlamados.textContent = '';
+
+      if (!turnosAtendiendo || turnosAtendiendo.length === 0) {
+        listaLlamados.appendChild(
+          UI.crearElemento('p', {
+            clase: 'texto-suave',
+            texto: 'En espera del próximo llamado a ventanilla.'
           })
-          .replace(',', '');
+        );
+        return;
       }
 
-      /**
-       * Actualiza el reloj del encabezado tomando como referencia la hora del servidor.
-       */
-      function actualizarReloj() {
-        relojServidor.textContent = formatearFechaHora(Date.now() + desfaseServidorMs);
-      }
-
-      /**
-       * Inicializa o reutiliza el AudioContext del navegador. En entornos kiosco
-       * lanzados con --autoplay-policy=no-user-gesture-required inicia activo
-       * sin requerir clic previo del usuario.
-       *
-       * @returns {AudioContext|null} Instancia lista o null si el navegador no soporta Web Audio.
-       */
-      function obtenerAudioContext() {
-        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-        if (!AudioContextCtor) return null;
-
-        if (!audioCtx) {
-          audioCtx = new AudioContextCtor();
-        }
-        return audioCtx;
-      }
-
-      /**
-       * Sintetiza un timbre armónico de dos notas ("ding-dong") mediante osciladores
-       * de Web Audio API con envolvente exponencial suave (sin archivos MP3 externos).
-       */
-      async function reproducirTimbreLlamado() {
-        const ctx = obtenerAudioContext();
-        if (!ctx) return;
-
-        try {
-          // Intentar reanudar el contexto por si se inició suspendido.
-          if (ctx.state === 'suspended') {
-            await ctx.resume();
+      turnosAtendiendo.forEach((turno, indice) => {
+        let claseTarjeta = 'tarjeta-llamado';
+        if (indice === 0) {
+          claseTarjeta += ' tarjeta-llamado--principal';
+          if (esNuevoLlamado) {
+            claseTarjeta += ' tarjeta-llamado--nuevo';
           }
-
-          const inicio = ctx.currentTime;
-
-          // Secuencia de dos tonos claros audibles en sala de espera (Mi5 -> La5).
-          const notas = [
-            { frecuencia: 659.25, offset: 0, duracion: 0.35 },
-            { frecuencia: 880.0, offset: 0.18, duracion: 0.55 }
-          ];
-
-          for (const nota of notas) {
-            const oscilador = ctx.createOscillator();
-            const ganancia = ctx.createGain();
-
-            oscilador.type = 'sine';
-            oscilador.frequency.setValueAtTime(nota.frecuencia, inicio + nota.offset);
-
-            // Ataque rápido sin chasquido y decaimiento suave hasta casi silencio.
-            ganancia.gain.setValueAtTime(0.001, inicio + nota.offset);
-            ganancia.gain.exponentialRampToValueAtTime(0.28, inicio + nota.offset + 0.02);
-            ganancia.gain.exponentialRampToValueAtTime(
-              0.001,
-              inicio + nota.offset + nota.duracion
-            );
-
-            oscilador.connect(ganancia);
-            ganancia.connect(ctx.destination);
-
-            oscilador.start(inicio + nota.offset);
-            oscilador.stop(inicio + nota.offset + nota.duracion + 0.02);
-          }
-        } catch (_) {
-          // Si se abre manualmente sin la bandera --autoplay-policy en pruebas,
-          // evitamos lanzar excepciones no capturadas en consola.
-        }
-      }
-
-      /**
-       * Renderiza la lista de turnos actualmente llamados / en atención,
-       * resaltando la tarjeta del llamado más reciente.
-       *
-       * @param {Array<object>} turnosAtendiendo - Turnos ordenados del más reciente al más antiguo.
-       */
-      function renderizarLlamados(turnosAtendiendo) {
-        listaLlamados.textContent = '';
-
-        if (!turnosAtendiendo || turnosAtendiendo.length === 0) {
-          const vacio = document.createElement('p');
-          vacio.className = 'encabezado-subtitulo';
-          vacio.textContent = 'En espera del próximo llamado a ventanilla.';
-          listaLlamados.appendChild(vacio);
-          return;
         }
 
-        turnosAtendiendo.forEach((turno, indice) => {
-          const tarjeta = document.createElement('article');
-          tarjeta.className =
-            indice === 0 ? 'tarjeta-llamado tarjeta-llamado--principal' : 'tarjeta-llamado';
-
-          const bloqueIzq = document.createElement('div');
-          const codigo = document.createElement('div');
-          codigo.className = 'llamado-codigo';
-          codigo.textContent = turno.codigo;
-
-          const servicio = document.createElement('span');
-          servicio.className = `badge badge--${turno.tipo}`;
-          servicio.textContent = NOMBRES_SERVICIO[turno.tipo] || turno.tipo;
-          bloqueIzq.append(codigo, servicio);
-
-          const ventanilla = document.createElement('div');
-          ventanilla.className = 'llamado-ventanilla';
-          ventanilla.textContent = turno.ventanilla || '';
-
-          tarjeta.append(bloqueIzq, ventanilla);
-          listaLlamados.appendChild(tarjeta);
+        const izquierda = UI.crearElemento('div', {
+          hijos: [
+            UI.crearElemento('div', { clase: 'llamado-codigo', texto: turno.codigo }),
+            UI.crearElemento('span', {
+              clase: `etiqueta etiqueta--${turno.tipo}`,
+              texto: UI.SERVICIOS[turno.tipo] || turno.tipo
+            })
+          ]
         });
+
+        const derecha = UI.crearElemento('div', {
+          clase: 'llamado-ventanilla',
+          texto: turno.ventanilla || ''
+        });
+
+        listaLlamados.appendChild(
+          UI.crearElemento('article', {
+            clase: claseTarjeta,
+            hijos: [izquierda, derecha]
+          })
+        );
+      });
+    }
+
+    // Actualiza los tiempos estimados y la fila de próximos turnos ordenados por llegada.
+    function dibujarEspera(tiempos, proximos) {
+      if (tiempos) {
+        estimadoCaja.textContent = tiempos.caja || '5 min';
+        estimadoEjecutivo.textContent = tiempos.ejecutivo || '5 min';
+        estimadoAtencion.textContent = tiempos.atencion || '5 min';
       }
 
-      /**
-       * Renderiza los tiempos estimados por servicio y la cola cronológica FIFO.
-       *
-       * @param {object} tiemposEstimados - Tiempos calculados por el servidor.
-       * @param {Array<object>} proximosEspera - Turnos en espera en orden de llegada.
-       */
-      function renderizarEspera(tiemposEstimados, proximosEspera) {
-        if (tiemposEstimados) {
-          estimadoCaja.textContent = tiemposEstimados.caja || '5 min';
-          estimadoEjecutivo.textContent = tiemposEstimados.ejecutivo || '5 min';
-          estimadoAtencion.textContent = tiemposEstimados.atencion || '5 min';
-        }
+      listaEspera.textContent = '';
 
-        listaEspera.textContent = '';
-
-        if (!proximosEspera || proximosEspera.length === 0) {
-          esperaVacia.classList.remove('oculto');
-          esperaRestantes.classList.add('oculto');
-          return;
-        }
-
-        esperaVacia.classList.add('oculto');
-
-        const visibles = proximosEspera.slice(0, MAX_ESPERA_VISIBLE);
-        for (const turno of visibles) {
-          const item = document.createElement('li');
-          item.className = 'item-espera';
-
-          const codigo = document.createElement('span');
-          codigo.textContent = turno.codigo;
-
-          const badge = document.createElement('span');
-          badge.className = `badge badge--${turno.tipo}`;
-          badge.textContent = NOMBRES_SERVICIO[turno.tipo] || turno.tipo;
-
-          item.append(codigo, badge);
-          listaEspera.appendChild(item);
-        }
-
-        const ocultos = proximosEspera.length - visibles.length;
-        if (ocultos > 0) {
-          esperaRestantes.textContent = `+ ${ocultos} turnos adicionales en espera`;
-          esperaRestantes.classList.remove('oculto');
-        } else {
-          esperaRestantes.classList.add('oculto');
-        }
+      if (!proximos || proximos.length === 0) {
+        esperaVacia.classList.remove('oculto');
+        esperaRestantes.classList.add('oculto');
+        return;
       }
 
-      /**
-       * Aplica el estado completo recibido por HTTP inicial o por SSE.
-       *
-       * @param {object} estado - Snapshot completo enviado por el servidor.
-       * @param {object|null} [turnoLlamado=null] - Turno recién llamado en evento SSE.
-       */
-      function aplicarEstado(estado, turnoLlamado = null) {
-        if (!estado) return;
+      esperaVacia.classList.add('oculto');
+      const visibles = proximos.slice(0, MAX_ESPERA_VISIBLE);
 
-        if (typeof estado.ahora === 'number') {
-          desfaseServidorMs = estado.ahora - Date.now();
-        }
-        actualizarReloj();
+      for (const turno of visibles) {
+        listaEspera.appendChild(
+          UI.crearElemento('li', {
+            clase: 'item-espera',
+            hijos: [
+              UI.crearElemento('span', { texto: turno.codigo }),
+              UI.crearElemento('span', {
+                clase: `etiqueta etiqueta--${turno.tipo}`,
+                texto: UI.SERVICIOS[turno.tipo] || turno.tipo
+              })
+            ]
+          })
+        );
+      }
 
-        renderizarLlamados(estado.turnosAtendiendo || []);
-        renderizarEspera(estado.tiemposEstimados, estado.proximosEspera || []);
+      const ocultos = proximos.length - visibles.length;
+      if (ocultos > 0) {
+        esperaRestantes.textContent = `+ ${ocultos} turnos adicionales en espera`;
+        esperaRestantes.classList.remove('oculto');
+      } else {
+        esperaRestantes.classList.add('oculto');
+      }
+    }
 
-        // Disparar timbre únicamente cuando llegue un llamado nuevo distinto al último sonado.
-        if (turnoLlamado && turnoLlamado.id) {
-          const claveLlamado = `${turnoLlamado.id}-${turnoLlamado.hora_llamado || ''}`;
-          if (claveLlamado !== ultimoLlamadoSonado) {
-            ultimoLlamadoSonado = claveLlamado;
-            reproducirTimbreLlamado();
-          }
+    function aplicarEstado(estado, turnoLlamado = null) {
+      if (!estado) return;
+      reloj.sincronizar(estado.ahora);
+
+      let esNuevoLlamado = false;
+      if (turnoLlamado && turnoLlamado.id) {
+        const clave = `${turnoLlamado.id}-${turnoLlamado.hora_llamado || ''}`;
+        if (clave !== ultimoLlamadoSonado) {
+          ultimoLlamadoSonado = clave;
+          esNuevoLlamado = true;
+          reproducirTimbre();
         }
       }
 
-      /**
-       * Carga inicial de estado para mostrar turnos desde el primer instante.
-       */
-      async function cargarEstadoInicial() {
-        try {
-          const respuesta = await fetch('/api/estado');
-          if (!respuesta.ok) return;
-          const estado = await respuesta.json();
-          aplicarEstado(estado, null);
-        } catch (_) {
-          // Si el servidor aún inicia, EventSource completará la sincronización.
-        }
+      dibujarLlamados(estado.turnosAtendiendo || [], esNuevoLlamado);
+      dibujarEspera(estado.tiemposEstimados, estado.proximosEspera || []);
+    }
+
+    // Respaldo por si alguien abre esta vista en una PC normal sin políticas de kiosco:
+    // desbloquea el audio al primer toque o tecla.
+    function desbloquearAudio() {
+      const audio = obtenerAudio();
+      if (audio && audio.state === 'suspended') {
+        audio.resume().catch(() => {});
       }
+    }
+    window.addEventListener('pointerdown', desbloquearAudio, { once: true });
+    window.addEventListener('keydown', desbloquearAudio, { once: true });
 
-      /**
-       * Abre el canal Server-Sent Events (/api/eventos) con actualización < 1 s.
-       */
-      function conectarSSE() {
-        if (fuenteEventos) {
-          fuenteEventos.close();
-        }
+    UI.obtenerEstado()
+      .then((estado) => aplicarEstado(estado, null))
+      .catch(() => {});
 
-        fuenteEventos = new EventSource('/api/eventos');
+    UI.conectarEnVivo({
+      cajaEstado: document.getElementById('estado-sse'),
+      textoEstado: document.getElementById('texto-sse'),
+      alRecibir: (aviso) => aplicarEstado(aviso.estado, aviso.turnoLlamado || null)
+    });
 
-        fuenteEventos.onopen = () => {
-          estadoSSE.className = 'estado-sse estado-sse--conectado';
-          textoSSE.textContent = 'En vivo';
-        };
-
-        fuenteEventos.onmessage = (evento) => {
-          try {
-            const payload = JSON.parse(evento.data);
-            if (payload && payload.estado) {
-              aplicarEstado(payload.estado, payload.turnoLlamado || null);
-            }
-          } catch (_) {
-            // Ignorar tramas inválidas sin interrumpir el canal SSE.
-          }
-        };
-
-        fuenteEventos.onerror = () => {
-          estadoSSE.className = 'estado-sse estado-sse--error';
-          textoSSE.textContent = 'Reconectando...';
-        };
-      }
-
-      // Respaldo opcional para pruebas manuales en navegadores sin la bandera
-      // --autoplay-policy=no-user-gesture-required: desbloquea audio al primer toque.
-      function desbloquearAudioConGesto() {
-        const ctx = obtenerAudioContext();
-        if (ctx && ctx.state === 'suspended') {
-          ctx.resume().catch(() => {});
-        }
-      }
-      window.addEventListener('pointerdown', desbloquearAudioConGesto, { once: true });
-      window.addEventListener('keydown', desbloquearAudioConGesto, { once: true });
-
-      cargarEstadoInicial();
-      conectarSSE();
-      setInterval(actualizarReloj, 15000);
-    })();
+    setInterval(() => reloj.actualizar(), 15000);
   </script>
 </body>
 </html>
