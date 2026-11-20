@@ -1,0 +1,13 @@
+# Dependencias de Node.js
+node_modules/
+npm-debug.log*
+
+# Base de datos SQLite generada automáticamente en tiempo de ejecución
+*.db
+*.db-shm
+*.db-wal
+
+# Configuraciones locales del editor/agente y sistema operativo
+.agents/
+.DS_Store
+.env
