@@ -31,6 +31,7 @@ sistema-turnos/
 ├── server.js
 ├── turnos.db
 └── public/
+    ├── comun.js
     ├── estilos.css
     ├── kiosco.html
     ├── pantalla.html

@@ -1,111 +1,42 @@
 process.env.TZ = 'America/Mazatlan';
 
-/**
- * ============================================================================
- * Archivo: server.js (Backend completo: SQLite, API REST, SSE y Tareas Programadas)
- * ----------------------------------------------------------------------------
- * Propósito general:
- *   Servidor monolítico ligero en Node.js + Express para el Sistema de Turnos.
- *   Incluye:
- *     1. Zona horaria local del servidor (America/Mazatlan).
- *     2. Conexión a SQLite (turnos.db) mediante node:sqlite con modo WAL,
- *        busy_timeout y transacciones atómicas BEGIN IMMEDIATE.
- *     3. Esquema de tablas (ventanillas y turnos), índices y seed obligatorio
- *        de las 7 ventanillas fijas.
- *     4. Rutas REST (creación/cierre de turnos, apertura/llamado/estado de
- *        ventanillas, estado general, cierre y reinicio de jornada) y canal SSE
- *        en tiempo real (GET /api/eventos).
- *     5. Tareas programadas mediante timers exactos (cierre diario a las 18:00,
- *        transición de medianoche 00:00, auto-cierre por inactividad de 2 horas
- *        y saneamiento al arranque sin polling periódico).
- *
- * Dependencias con otros módulos:
- *   - express: servidor HTTP, parseo JSON y servicio de estáticos en public/.
- *   - node:sqlite (DatabaseSync): persistencia transaccional síncrona en SQLite.
- *   - node:path: resolución segura de rutas locales en disco.
- *   - public/: interfaces HTML5/CSS3/JS conectadas vía fetch() y EventSource.
- * ============================================================================
- */
+/*
+  Servidor principal del Sistema de Gestión de Turnos.
+
+  Este archivo hace todo el trabajo central del sistema:
+  - Guarda los turnos y el estado de las 7 ventanillas en un archivo SQLite (turnos.db).
+  - Entrega las páginas web de la carpeta "public/" (kiosco, ventanillas, pantalla y tablero).
+  - Recibe peticiones de las pantallas (pedir turno, llamar cliente, cerrar atención, pausar).
+  - Avisa al instante a todas las pantallas conectadas cuando algo cambia.
+  - Cierra la jornada automáticamente a las 18:00 hrs y libera ventanillas tras 2 horas sin uso.
+*/
 
 const path = require('node:path');
 const express = require('express');
 const { DatabaseSync } = require('node:sqlite');
 
-// ----------------------------------------------------------------------------
-// 1. Configuración general del servidor Express
-// ----------------------------------------------------------------------------
+// --- 1. Configuración básica del servidor web y base de datos ---
 
-// Puerto poco común por defecto para evitar colisiones en entornos locales o de
-// pruebas (puede sobreescribirse mediante la variable de entorno PORT).
 const PUERTO = Number(process.env.PORT) || 4782;
-
-// Ruta absoluta al archivo único de base de datos SQLite en la raíz del proyecto.
 const RUTA_DB = path.join(__dirname, 'turnos.db');
 
-// Instancia principal de Express y middlewares base.
-const app = express();
+// Tiempo máximo sin actividad antes de cerrar una ventanilla abierta (2 horas en milisegundos).
+const DOS_HORAS_MS = 2 * 60 * 60 * 1000;
 
-// Permite recibir cuerpos JSON en las peticiones POST (POST /api/turnos, etc.).
-app.use(express.json());
+const PREFIJOS_SERVICIO = {
+  caja: 'C',
+  ejecutivo: 'E',
+  atencion: 'A'
+};
 
-// Sirve las vistas HTML5 y hoja de estilos CSS3 ubicadas en la carpeta public/.
-app.use(express.static(path.join(__dirname, 'public')));
+const MOTIVOS_VALIDOS = new Set([
+  'atendido',
+  'no_atendido',
+  'no_aparecio',
+  'turno_equivocado'
+]);
 
-// ----------------------------------------------------------------------------
-// 2. Conexión a SQLite (turnos.db) y Control de Transacciones Atómicas
-// ----------------------------------------------------------------------------
-
-// Abre (o crea si no existe) el archivo único turnos.db con el módulo nativo node:sqlite.
-const db = new DatabaseSync(RUTA_DB);
-
-// Activa Write-Ahead Logging (WAL) para permitir lecturas concurrentes mientras
-// se realizan escrituras atómicas, mejorando rendimiento y tolerancia a fallos.
-db.exec('PRAGMA journal_mode = WAL;');
-
-// Configura espera de hasta 5 segundos si SQLite encuentra un bloqueo momentáneo
-// entre transacciones concurrentes (evita errores SQLITE_BUSY prematuros).
-db.exec('PRAGMA busy_timeout = 5000;');
-
-/**
- * Envuelve cualquier operación crítica de lectura-escritura dentro de una
- * transacción atómica BEGIN IMMEDIATE ... COMMIT (AGENTS.md §4 y RNF-02).
- *
- * Se utiliza BEGIN IMMEDIATE en lugar de BEGIN DEFERRED porque adquiere el
- * bloqueo de escritura desde el inicio de la transacción, impidiendo que dos
- * peticiones concurrentes lean el mismo turno en 'espera' o el mismo folio
- * antes de escribir. Ante cualquier error ejecuta ROLLBACK automáticamente.
- *
- * @template T
- * @param {() => T} fn - Función síncrona con las consultas SQL a ejecutar.
- * @returns {T} Valor retornado por la función fn tras el COMMIT exitoso.
- */
-function ejecutarTransaccion(fn) {
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    const resultado = fn();
-    db.exec('COMMIT');
-    return resultado;
-  } catch (error) {
-    try {
-      db.exec('ROLLBACK');
-    } catch (_) {
-      // Si SQLite ya revirtió la transacción por un fallo interno, evitamos
-      // enmascarar el error original al intentar otro ROLLBACK.
-    }
-    throw error;
-  }
-}
-
-// ----------------------------------------------------------------------------
-// 3. Definición de Esquema y Seed Obligatorio de las 7 Ventanillas
-// ----------------------------------------------------------------------------
-
-/**
- * Catálogo fijo obligatorio de las 7 ventanillas (AGENTS.md §4 y SPEC.md §14.B):
- *   - Ventanilla 1 a 4: servicio 'caja'
- *   - Ventanilla 5 a 6: servicio 'ejecutivo'
- *   - Ventanilla 7: servicio 'atencion'
- */
+// Lista fija de las 7 ventanillas del comercio y el servicio que atiende cada una.
 const CATALOGO_VENTANILLAS = [
   { numero: 1, ventanilla: 'Ventanilla 1', tipo_servicio: 'caja' },
   { numero: 2, ventanilla: 'Ventanilla 2', tipo_servicio: 'caja' },
@@ -116,15 +47,113 @@ const CATALOGO_VENTANILLAS = [
   { numero: 7, ventanilla: 'Ventanilla 7', tipo_servicio: 'atencion' }
 ];
 
-/**
- * Crea las tablas 'ventanillas' y 'turnos' exactamente con el esquema definido
- * en AGENTS.md §4, genera los índices necesarios para filtrar eficientemente
- * por fecha_jornada y siembra de forma idempotente las 7 ventanillas fijas.
- *
- * @returns {void}
- */
+const app = express();
+
+// Permite leer datos enviados en formato JSON y entregar los archivos HTML/CSS/JS de "public/".
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Conexión a la base de datos SQLite en un solo archivo local.
+// WAL permite que varias pantallas lean al mismo tiempo mientras se guarda un cambio,
+// y busy_timeout espera hasta 5 segundos si dos peticiones coinciden en el mismo instante.
+const db = new DatabaseSync(RUTA_DB);
+db.exec('PRAGMA journal_mode = WAL;');
+db.exec('PRAGMA busy_timeout = 5000;');
+
+// Lista de pantallas conectadas escuchando avisos en vivo.
+const clientesEnVivo = new Set();
+
+// Temporizadores activos en memoria (uno por ventanilla abierta, máximo 7).
+const timersInactividad = new Map();
+let timerCierreDiario = null;
+let timerCambioDia = null;
+
+// --- 2. Utilidades de fecha, errores y operaciones seguras en SQLite ---
+
+// Error sencillo con código HTTP (por ejemplo 409 cuando una ventanilla ya está ocupada).
+class ErrorNegocio extends Error {
+  constructor(status, mensaje) {
+    super(mensaje);
+    this.status = status;
+  }
+}
+
+// Convierte una marca de tiempo a fecha local YYYY-MM-DD (usando la hora de Mazatlán).
+function fechaLocal(ms = Date.now()) {
+  return new Date(ms).toLocaleDateString('en-CA');
+}
+
+// Convierte una marca de tiempo a texto corto "DD/MM/YY HH:mm" para los tickets y registros.
+function formatearFechaHora(ms) {
+  return new Date(ms)
+    .toLocaleString('es-MX', {
+      dateStyle: 'short',
+      timeStyle: 'short',
+      hour12: false,
+      hourCycle: 'h23'
+    })
+    .replace(',', '');
+}
+
+// Ejecuta varias consultas SQL como una sola operación protegida (BEGIN IMMEDIATE).
+// Así evitamos que dos cajeros atiendan al mismo cliente o generen el mismo número si hacen clic juntos.
+function ejecutarTransaccion(pasos) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const resultado = pasos();
+    db.exec('COMMIT');
+    return resultado;
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch (_) {
+      // Si SQLite ya canceló la operación internamente, conservamos el error original.
+    }
+    throw error;
+  }
+}
+
+// Suma los segundos que una ventanilla ya tenía guardados hoy más los que lleva activa desde su última apertura.
+function acumularSegundosActivos(ventanilla, hastaMs) {
+  if (ventanilla.estado !== 'activo' || !ventanilla.ultimo_inicio_activo) {
+    return ventanilla.segundos_activos;
+  }
+  const extra = Math.max(0, Math.floor((hastaMs - ventanilla.ultimo_inicio_activo) / 1000));
+  return ventanilla.segundos_activos + extra;
+}
+
+// Devuelve a la fila de espera los turnos que quedaron asignados a una ventanilla que se cerró.
+// Si no se indica nombre de ventanilla, libera todos los turnos en atención de hoy.
+function liberarTurnosEnAtencion(hoy, nombreVentanilla = null) {
+  if (nombreVentanilla) {
+    return db
+      .prepare(`
+        UPDATE turnos
+        SET estado = 'espera',
+            ventanilla = NULL,
+            hora_llamado = NULL
+        WHERE fecha_jornada = ?
+          AND ventanilla = ?
+          AND estado = 'atendiendo';
+      `)
+      .run(hoy, nombreVentanilla).changes;
+  }
+
+  return db
+    .prepare(`
+      UPDATE turnos
+      SET estado = 'espera',
+          ventanilla = NULL,
+          hora_llamado = NULL
+      WHERE fecha_jornada = ?
+        AND estado = 'atendiendo';
+    `)
+    .run(hoy).changes;
+}
+
+// --- 3. Creación inicial de tablas y guardado de las 7 ventanillas ---
+
 function inicializarBaseDeDatos() {
-  // Creación de la tabla 'ventanillas' (estado operativo en vivo de los 7 módulos).
   db.exec(`
     CREATE TABLE IF NOT EXISTS ventanillas (
       numero INTEGER UNIQUE NOT NULL,
@@ -135,11 +164,7 @@ function inicializarBaseDeDatos() {
       ultimo_inicio_activo INTEGER,
       ultima_actividad INTEGER
     );
-  `);
 
-  // Creación de la tabla 'turnos' (sin UNIQUE en codigo porque la numeración
-  // es cíclica del 01 al 99 dentro de la jornada y se reinicia cada día).
-  db.exec(`
     CREATE TABLE IF NOT EXISTS turnos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       fecha_jornada TEXT NOT NULL,
@@ -153,111 +178,30 @@ function inicializarBaseDeDatos() {
       hora_llamado INTEGER,
       hora_fin INTEGER
     );
-  `);
 
-  // Índice compuesto para calcular rápidamente el último folio por servicio y día,
-  // así como consultar colas FIFO en espera ordenadas por id.
-  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_turnos_jornada_tipo_id
     ON turnos (fecha_jornada, tipo, id);
-  `);
 
-  // Índice compuesto para consultas del estado actual del día y métricas del dashboard.
-  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_turnos_jornada_estado
     ON turnos (fecha_jornada, estado);
   `);
 
-  // Inserción idempotente de las 7 ventanillas fijas dentro de una transacción.
-  // INSERT OR IGNORE preserva cualquier estado o tiempo acumulado si ya existían.
+  // Inserta las 7 ventanillas solo si todavía no existen en la base de datos.
   ejecutarTransaccion(() => {
-    const insertarVentanilla = db.prepare(`
+    const insertar = db.prepare(`
       INSERT OR IGNORE INTO ventanillas (numero, ventanilla, tipo_servicio)
       VALUES (?, ?, ?);
     `);
-
     for (const item of CATALOGO_VENTANILLAS) {
-      insertarVentanilla.run(item.numero, item.ventanilla, item.tipo_servicio);
+      insertar.run(item.numero, item.ventanilla, item.tipo_servicio);
     }
   });
 }
 
-// ----------------------------------------------------------------------------
-// 4. Reglas de Negocio, Canal SSE y Consulta de Estado (Paso 2)
-// ----------------------------------------------------------------------------
+// --- 4. Reglas de turnos, filas de espera, estadísticas y avisos en vivo ---
 
-// Prefijos oficiales de folio por tipo de servicio.
-const PREFIJOS_SERVICIO = {
-  caja: 'C',
-  ejecutivo: 'E',
-  atencion: 'A'
-};
-
-// Catálogo cerrado de los 4 motivos válidos al finalizar la atención de un turno.
-const RESULTADOS_VALIDOS = new Set([
-  'atendido',
-  'no_atendido',
-  'no_aparecio',
-  'turno_equivocado'
-]);
-
-// Conjunto de respuestas HTTP activas suscritas al canal SSE (GET /api/eventos).
-const clientesSSE = new Set();
-
-// Puntos de enlace que el Paso 3 sobrescribirá para gestionar los timers de
-// inactividad de 2 horas sin duplicar ni reescribir la lógica de las rutas REST.
-const hooksTimers = {
-  alActivarVentanilla: () => {},
-  alCerrarVentanilla: () => {},
-  alCerrarTodas: () => {}
-};
-
-/**
- * Error controlado de negocio HTTP para distinguir validaciones (400, 404, 409)
- * de fallos inesperados del servidor (500) y abortar limpiamente la transacción.
- */
-class ErrorHttp extends Error {
-  /**
-   * @param {number} status - Código HTTP de respuesta (400, 404 o 409).
-   * @param {string} mensaje - Descripción legible del error para el frontend.
-   */
-  constructor(status, mensaje) {
-    super(mensaje);
-    this.status = status;
-  }
-}
-
-/**
- * Formatea una marca de tiempo numérica (Date.now()) al formato DD/MM/YY HH:mm
- * usando el reloj local configurado en el servidor (sin mostrar zonas horarias).
- *
- * @param {number} ms - Milisegundos devueltos por Date.now().
- * @returns {string} Fecha y hora formateadas como DD/MM/YY HH:mm.
- */
-function formatearTicket(ms) {
-  return new Date(ms)
-    .toLocaleString('es-MX', {
-      dateStyle: 'short',
-      timeStyle: 'short',
-      hour12: false
-    })
-    .replace(',', '');
-}
-
-/**
- * Desencola de forma atómica el turno más antiguo en 'espera' de la jornada
- * actual para el servicio indicado (principio FIFO: ORDER BY id ASC LIMIT 1)
- * y lo asigna en estado 'atendiendo' a la ventanilla solicitante.
- *
- * IMPORTANTE: Debe invocarse únicamente dentro de ejecutarTransaccion().
- *
- * @param {string} tipoServicio - 'caja', 'ejecutivo' o 'atencion'.
- * @param {string} nombreVentanilla - Nombre exacto de la ventanilla (ej. 'Ventanilla 1').
- * @param {number} ahora - Timestamp actual (Date.now()).
- * @param {string} hoy - Fecha de jornada local (YYYY-MM-DD).
- * @returns {object|null} Turno asignado o null si la fila estaba vacía.
- */
-function desencolarSiguienteTurno(tipoServicio, nombreVentanilla, ahora, hoy) {
+// Toma el turno más antiguo en espera de un servicio (el primero que llegó) y lo asigna a la ventanilla.
+function tomarSiguienteDeFila(tipoServicio, nombreVentanilla, ahora, hoy) {
   const siguiente = db
     .prepare(`
       SELECT *
@@ -282,47 +226,24 @@ function desencolarSiguienteTurno(tipoServicio, nombreVentanilla, ahora, hoy) {
     WHERE id = ?;
   `).run(nombreVentanilla, ahora, siguiente.id);
 
-  // Devolvemos la fila ya actualizada desde SQLite como fuente única de verdad.
   return db.prepare('SELECT * FROM turnos WHERE id = ?;').get(siguiente.id);
 }
 
-/**
- * Calcula los segundos activos acumulados de una ventanilla en la jornada actual.
- * Si su última actividad pertenece a un día anterior y la ventanilla está cerrada,
- * devuelve 0 para no arrastrar tiempo de jornadas pasadas al tablero de hoy.
- *
- * @param {object} filaVentanilla - Registro de la tabla ventanillas.
- * @param {number} ahora - Timestamp actual (Date.now()).
- * @param {string} hoy - Fecha de jornada local (YYYY-MM-DD).
- * @returns {number} Segundos activos netos del día actual.
- */
-function calcularSegundosActivosHoy(filaVentanilla, ahora, hoy) {
+// Calcula cuántos segundos activos lleva hoy una ventanilla (si estaba cerrada desde ayer, empieza en 0).
+function calcularSegundosActivosHoy(ventanilla, ahora, hoy) {
   if (
-    filaVentanilla.estado === 'cerrado' &&
-    filaVentanilla.ultima_actividad &&
-    new Date(filaVentanilla.ultima_actividad).toLocaleDateString('en-CA') !== hoy
+    ventanilla.estado === 'cerrado' &&
+    ventanilla.ultima_actividad &&
+    fechaLocal(ventanilla.ultima_actividad) !== hoy
   ) {
     return 0;
   }
-
-  const tiempoEnCurso =
-    filaVentanilla.estado === 'activo' && filaVentanilla.ultimo_inicio_activo
-      ? Math.max(0, Math.floor((ahora - filaVentanilla.ultimo_inicio_activo) / 1000))
-      : 0;
-
-  return filaVentanilla.segundos_activos + tiempoEnCurso;
+  return acumularSegundosActivos(ventanilla, ahora);
 }
 
-/**
- * Calcula el tiempo estimado de espera para un servicio específico en la jornada:
- * promedia (hora_llamado - hora_creacion) de los últimos 20 turnos cerrados como
- * 'atendido' del día. Si hay menos de 3 muestras, retorna el valor base "5 min".
- *
- * @param {string} tipoServicio - 'caja', 'ejecutivo' o 'atencion'.
- * @param {string} hoy - Fecha de jornada local (YYYY-MM-DD).
- * @returns {string} Texto estimado listo para pantalla (ej. "5 min", "12 min").
- */
-function calcularTiempoEstimadoServicio(tipoServicio, hoy) {
+// Estima el tiempo de espera promediando los últimos 20 turnos atendidos hoy para ese servicio.
+// Si todavía hay menos de 3 atendidos en el día, devuelve "5 min" como referencia inicial.
+function calcularTiempoEstimado(tipoServicio, hoy) {
   const muestras = db
     .prepare(`
       SELECT hora_creacion, hora_llamado
@@ -337,38 +258,28 @@ function calcularTiempoEstimadoServicio(tipoServicio, hoy) {
     `)
     .all(hoy, tipoServicio);
 
-  // Regla de negocio: con menos de 3 turnos atendidos en el día se usa "5 min".
   if (muestras.length < 3) {
     return '5 min';
   }
 
-  let sumaMs = 0;
+  let totalEsperaMs = 0;
   for (const turno of muestras) {
-    sumaMs += Math.max(0, turno.hora_llamado - turno.hora_creacion);
+    totalEsperaMs += Math.max(0, turno.hora_llamado - turno.hora_creacion);
   }
 
-  const promedioMin = Math.round(sumaMs / muestras.length / 60000);
-  return `${Math.max(1, promedioMin)} min`;
+  const minutos = Math.round(totalEsperaMs / muestras.length / 60000);
+  return `${Math.max(1, minutos)} min`;
 }
 
-/**
- * Construye el estado completo e instantáneo de la jornada actual para servirlo
- * tanto en GET /api/estado como en las notificaciones en tiempo real vía SSE.
- *
- * @returns {object} Snapshot completo de ventanillas, filas, tiempos y métricas.
- */
+// Reúne toda la información del día en un solo objeto listo para cualquiera de las pantallas.
 function obtenerEstadoCompleto() {
   const ahora = Date.now();
-  // Se usa 'en-CA' únicamente porque produce el formato ordenable YYYY-MM-DD
-  // de forma nativa con Date, respetando process.env.TZ = 'America/Mazatlan'.
-  const hoy = new Date(ahora).toLocaleDateString('en-CA');
+  const hoy = fechaLocal(ahora);
 
-  // 1. Consultar todas las ventanillas ordenadas numéricamente (1 a 7).
   const filasVentanillas = db
     .prepare('SELECT * FROM ventanillas ORDER BY numero ASC;')
     .all();
 
-  // 2. Consultar todos los turnos creados en la jornada actual en orden de llegada.
   const turnosHoy = db
     .prepare(`
       SELECT *
@@ -378,18 +289,16 @@ function obtenerEstadoCompleto() {
     `)
     .all(hoy);
 
-  // Mapa auxiliar de turno actualmente en atención indexado por nombre de ventanilla.
   const turnoPorVentanilla = new Map();
   const turnosAtendiendo = [];
   const filasEspera = { caja: [], ejecutivo: [], atencion: [] };
   const proximosEspera = [];
 
-  // Acumuladores para las métricas del dashboard del día.
   let totalCerrados = 0;
   let sumaEsperaMs = 0;
-  let conteoConEspera = 0;
+  let totalConEspera = 0;
   let sumaAtencionMs = 0;
-  let conteoAtencion = 0;
+  let totalAtencion = 0;
 
   const conteoMotivos = {
     atendido: 0,
@@ -404,7 +313,7 @@ function obtenerEstadoCompleto() {
   for (const turno of turnosHoy) {
     if (turno.hora_llamado !== null) {
       sumaEsperaMs += Math.max(0, turno.hora_llamado - turno.hora_creacion);
-      conteoConEspera += 1;
+      totalConEspera += 1;
     }
 
     if (turno.estado === 'atendiendo') {
@@ -412,10 +321,16 @@ function obtenerEstadoCompleto() {
       if (turno.ventanilla) {
         turnoPorVentanilla.set(turno.ventanilla, turno);
       }
-    } else if (turno.estado === 'espera') {
+      continue;
+    }
+
+    if (turno.estado === 'espera') {
       filasEspera[turno.tipo].push(turno);
       proximosEspera.push(turno);
-    } else if (turno.estado === 'cerrado') {
+      continue;
+    }
+
+    if (turno.estado === 'cerrado') {
       totalCerrados += 1;
       if (turno.resultado && Object.hasOwn(conteoMotivos, turno.resultado)) {
         conteoMotivos[turno.resultado] += 1;
@@ -435,12 +350,10 @@ function obtenerEstadoCompleto() {
             (atendidosPorVentanilla.get(turno.ventanilla) || 0) + 1
           );
         }
-
         if (turno.hora_llamado !== null && turno.hora_fin !== null) {
           sumaAtencionMs += Math.max(0, turno.hora_fin - turno.hora_llamado);
-          conteoAtencion += 1;
+          totalAtencion += 1;
         }
-
         if (turno.hora_fin !== null) {
           const hora = new Date(turno.hora_fin).getHours();
           atendidosPorHoraMap.set(hora, (atendidosPorHoraMap.get(hora) || 0) + 1);
@@ -449,35 +362,38 @@ function obtenerEstadoCompleto() {
     }
   }
 
-  // Ordenar turnos en atención poniendo el llamado más reciente primero.
+  // Muestra primero en la sala de espera el turno que acaba de ser llamado más recientemente.
   turnosAtendiendo.sort((a, b) => (b.hora_llamado || 0) - (a.hora_llamado || 0) || b.id - a.id);
 
-  // Enriquecer cada ventanilla con su tiempo activo actual y el turno que atiende.
   const ventanillas = filasVentanillas.map((v) => ({
     ...v,
     segundosActivos: calcularSegundosActivosHoy(v, ahora, hoy),
     turnoActual: turnoPorVentanilla.get(v.ventanilla) || null
   }));
 
-  // Tiempos estimados por servicio según regla de los últimos 20 atendidos.
   const tiemposEstimados = {
-    caja: calcularTiempoEstimadoServicio('caja', hoy),
-    ejecutivo: calcularTiempoEstimadoServicio('ejecutivo', hoy),
-    atencion: calcularTiempoEstimadoServicio('atencion', hoy)
+    caja: calcularTiempoEstimado('caja', hoy),
+    ejecutivo: calcularTiempoEstimado('ejecutivo', hoy),
+    atencion: calcularTiempoEstimado('atencion', hoy)
   };
 
-  // Construir arreglo ordenado cronológicamente de clientes atendidos por hora.
-  const clientesAtendidosPorHora = Array.from(atendidosPorHoraMap.entries())
-    .sort((a, b) => a[0] - b[0])
-    .map(([horaNum, total]) => ({
-      horaNum,
-      etiqueta: `${String(horaNum).padStart(2, '0')}:00`,
-      total
-    }));
+  // Crea una lista continua de horas desde la primera hasta la última atención del día.
+  const horas = Array.from(atendidosPorHoraMap.keys());
+  const clientesAtendidosPorHora = [];
+  if (horas.length > 0) {
+    const inicio = Math.min(...horas);
+    const fin = Math.max(...horas);
+    for (let h = inicio; h <= fin; h += 1) {
+      clientesAtendidosPorHora.push({
+        horaNum: h,
+        etiqueta: `${String(h).padStart(2, '0')}:00`,
+        total: atendidosPorHoraMap.get(h) || 0
+      });
+    }
+  }
 
-  // Desglose de motivos con cantidad y porcentaje redondeado a 1 decimal.
   const motivos = {};
-  for (const clave of RESULTADOS_VALIDOS) {
+  for (const clave of MOTIVOS_VALIDOS) {
     const cantidad = conteoMotivos[clave];
     motivos[clave] = {
       cantidad,
@@ -497,7 +413,7 @@ function obtenerEstadoCompleto() {
 
   return {
     fechaJornada: hoy,
-    fechaServidor: formatearTicket(ahora),
+    fechaServidor: formatearFechaHora(ahora),
     ahora,
     ventanillas,
     turnosAtendiendo,
@@ -510,9 +426,9 @@ function obtenerEstadoCompleto() {
       enAtencion: turnosAtendiendo.length,
       totalCerrados,
       tiempoPromedioEsperaSeg:
-        conteoConEspera > 0 ? Math.round(sumaEsperaMs / conteoConEspera / 1000) : 0,
+        totalConEspera > 0 ? Math.round(sumaEsperaMs / totalConEspera / 1000) : 0,
       tiempoPromedioAtencionSeg:
-        conteoAtencion > 0 ? Math.round(sumaAtencionMs / conteoAtencion / 1000) : 0,
+        totalAtencion > 0 ? Math.round(sumaAtencionMs / totalAtencion / 1000) : 0,
       clientesAtendidosPorHora,
       motivos,
       rendimientoPorVentanilla
@@ -520,57 +436,119 @@ function obtenerEstadoCompleto() {
   };
 }
 
-/**
- * Envía una actualización en tiempo real (latencia < 1 s) a todas las pantallas
- * y paneles conectados mediante Server-Sent Events (SSE).
- *
- * @param {string} tipo - Nombre descriptivo del cambio ocurrido.
- * @param {object} [extra={}] - Metadatos adicionales (ej. turnoLlamado para audio).
- * @returns {void}
- */
-function emitirEventoSSE(tipo, extra = {}) {
-  if (clientesSSE.size === 0) {
+// Envía la foto actualizada del sistema a todas las pantallas conectadas en ese momento.
+function notificarPantallas(tipo, extra = {}) {
+  if (clientesEnVivo.size === 0) {
     return;
   }
 
-  const carga = JSON.stringify({
+  const mensaje = `data: ${JSON.stringify({
     tipo,
     ...extra,
     estado: obtenerEstadoCompleto()
-  });
+  })}\n\n`;
 
-  const mensaje = `data: ${carga}\n\n`;
-  for (const res of clientesSSE) {
+  for (const res of clientesEnVivo) {
     try {
       res.write(mensaje);
     } catch (_) {
-      // Si un socket cliente falló abruptamente, se depura del conjunto activo.
-      clientesSSE.delete(res);
+      clientesEnVivo.delete(res);
     }
   }
 }
 
-/**
- * Cierra la jornada operativa: pasa ventanillas activas/en pausa a 'cerrado'
- * consolidando sus segundos activos y cierra los turnos residuales del día
- * como 'no_atendido'. Conserva todo el historial del día en SQLite.
- *
- * @param {number} [ahora=Date.now()] - Marca de tiempo de cierre.
- * @returns {{ ok: boolean, ventanillasCerradas: number, turnosCerrados: number }}
- */
+// --- 5. Temporizadores automáticos (cierre a las 18:00, medianoche e inactividad de 2h) ---
+
+function cancelarTimerInactividad(nombreVentanilla) {
+  const timer = timersInactividad.get(nombreVentanilla);
+  if (timer) {
+    clearTimeout(timer);
+    timersInactividad.delete(nombreVentanilla);
+  }
+}
+
+function cancelarTodosLosTimersInactividad() {
+  for (const timer of timersInactividad.values()) {
+    clearTimeout(timer);
+  }
+  timersInactividad.clear();
+}
+
+// Si una ventanilla pasa 2 horas abierta sin registrar movimientos, se cierra sola
+// y devuelve a espera cualquier turno que tuviera asignado sin terminar.
+function cerrarVentanillaPorInactividad(nombreVentanilla, ahora = Date.now()) {
+  const hoy = fechaLocal(ahora);
+
+  const resultado = ejecutarTransaccion(() => {
+    const fila = db
+      .prepare('SELECT * FROM ventanillas WHERE ventanilla = ?;')
+      .get(nombreVentanilla);
+
+    if (!fila || fila.estado === 'cerrado') {
+      return { cerrada: false };
+    }
+
+    const transcurridoMs = fila.ultima_actividad
+      ? ahora - fila.ultima_actividad
+      : DOS_HORAS_MS;
+
+    if (transcurridoMs < DOS_HORAS_MS) {
+      return {
+        cerrada: false,
+        restanteMs: DOS_HORAS_MS - transcurridoMs
+      };
+    }
+
+    db.prepare(`
+      UPDATE ventanillas
+      SET estado = 'cerrado',
+          segundos_activos = ?,
+          ultimo_inicio_activo = NULL,
+          ultima_actividad = ?
+      WHERE ventanilla = ?;
+    `).run(acumularSegundosActivos(fila, ahora), ahora, nombreVentanilla);
+
+    liberarTurnosEnAtencion(hoy, nombreVentanilla);
+    return { cerrada: true };
+  });
+
+  if (resultado.restanteMs) {
+    programarTimerInactividad(nombreVentanilla, resultado.restanteMs);
+  } else if (resultado.cerrada) {
+    cancelarTimerInactividad(nombreVentanilla);
+    notificarPantallas('ventanilla_inactiva_cerrada', { ventanilla: nombreVentanilla });
+  }
+
+  return resultado;
+}
+
+// Programa o reinicia la cuenta regresiva de 2 horas para una ventanilla específica.
+function programarTimerInactividad(nombreVentanilla, esperaMs = DOS_HORAS_MS) {
+  cancelarTimerInactividad(nombreVentanilla);
+
+  const timer = setTimeout(() => {
+    timersInactividad.delete(nombreVentanilla);
+    cerrarVentanillaPorInactividad(nombreVentanilla);
+  }, Math.max(0, esperaMs));
+
+  // Permite que Node se apague limpiamente si cerramos el servidor manualmente.
+  if (typeof timer.unref === 'function') {
+    timer.unref();
+  }
+  timersInactividad.set(nombreVentanilla, timer);
+}
+
+// Cierra la jornada del día: cierra ventanillas abiertas guardando su tiempo activo
+// y marca como "no_atendido" los turnos que hayan quedado pendientes.
 function cerrarJornadaDiaria(ahora = Date.now()) {
-  const hoy = new Date(ahora).toLocaleDateString('en-CA');
+  const hoy = fechaLocal(ahora);
 
   const resultado = ejecutarTransaccion(() => {
     const abiertas = db
-      .prepare(`
-        SELECT *
-        FROM ventanillas
-        WHERE estado IN ('activo', 'pausa');
-      `)
+      .prepare("SELECT * FROM ventanillas WHERE estado IN ('activo', 'pausa');")
       .all();
 
-    const stmtCerrarVentanilla = db.prepare(`
+    const stmtCerrar = db.prepare(`
       UPDATE ventanillas
       SET estado = 'cerrado',
           segundos_activos = ?,
@@ -580,14 +558,10 @@ function cerrarJornadaDiaria(ahora = Date.now()) {
     `);
 
     for (const v of abiertas) {
-      const segundosExtra =
-        v.estado === 'activo' && v.ultimo_inicio_activo
-          ? Math.max(0, Math.floor((ahora - v.ultimo_inicio_activo) / 1000))
-          : 0;
-      stmtCerrarVentanilla.run(v.segundos_activos + segundosExtra, ahora, v.ventanilla);
+      stmtCerrar.run(acumularSegundosActivos(v, ahora), ahora, v.ventanilla);
     }
 
-    const infoTurnos = db
+    const turnosCerrados = db
       .prepare(`
         UPDATE turnos
         SET estado = 'cerrado',
@@ -596,31 +570,24 @@ function cerrarJornadaDiaria(ahora = Date.now()) {
         WHERE fecha_jornada = ?
           AND estado IN ('espera', 'atendiendo');
       `)
-      .run(ahora, hoy);
+      .run(ahora, hoy).changes;
 
     return {
       ok: true,
       ventanillasCerradas: abiertas.length,
-      turnosCerrados: infoTurnos.changes
+      turnosCerrados
     };
   });
 
-  hooksTimers.alCerrarTodas();
-  emitirEventoSSE('jornada_cerrada');
+  cancelarTodosLosTimersInactividad();
+  notificarPantallas('jornada_cerrada');
   return resultado;
 }
 
-/**
- * Reinicia el estado operativo de las 7 ventanillas a cero ('cerrado',
- * segundos_activos = 0, marcas en NULL) para preparar el día siguiente o repetir
- * pruebas. Si limpiarTurnosHoy es true, borra únicamente los turnos de la fecha
- * actual para reiniciar folios a 01 sin tocar el historial de días anteriores.
- *
- * @param {{ limpiarTurnosHoy?: boolean }} [opciones={}] - Opciones de reinicio.
- * @returns {{ ok: boolean, turnosEliminados: number }}
- */
+// Deja las 7 ventanillas cerradas con reloj en cero. Si limpiarTurnosHoy es verdadero,
+// borra además los turnos del día actual (útil para pruebas repetidas) sin tocar días anteriores.
 function reiniciarJornada({ limpiarTurnosHoy = false } = {}) {
-  const hoy = new Date().toLocaleDateString('en-CA');
+  const hoy = fechaLocal();
 
   const resultado = ejecutarTransaccion(() => {
     db.prepare(`
@@ -632,72 +599,318 @@ function reiniciarJornada({ limpiarTurnosHoy = false } = {}) {
     `).run();
 
     let turnosEliminados = 0;
+    let turnosLiberados = 0;
+
     if (limpiarTurnosHoy) {
-      const info = db
+      turnosEliminados = db
         .prepare('DELETE FROM turnos WHERE fecha_jornada = ?;')
-        .run(hoy);
-      turnosEliminados = info.changes;
+        .run(hoy).changes;
+    } else {
+      turnosLiberados = liberarTurnosEnAtencion(hoy);
     }
 
-    return { ok: true, turnosEliminados };
+    return { ok: true, turnosEliminados, turnosLiberados };
   });
 
-  hooksTimers.alCerrarTodas();
-  emitirEventoSSE('jornada_reiniciada');
+  cancelarTodosLosTimersInactividad();
+  notificarPantallas('jornada_reiniciada');
   return resultado;
 }
 
-// ----------------------------------------------------------------------------
-// 5. Rutas REST y Canal SSE
-// ----------------------------------------------------------------------------
+// Al encender el servidor o al cambiar de día, limpia sesiones atrasadas si el equipo estuvo apagado.
+function sanearAlArranque(ahora = Date.now()) {
+  const fechaRef = new Date(ahora);
+  const hoy = fechaLocal(ahora);
 
-// Evita errores 404 en consola cuando los navegadores solicitan /favicon.ico.
+  const corteHoy = new Date(fechaRef);
+  corteHoy.setHours(18, 0, 0, 0);
+  const corteHoyMs = corteHoy.getTime();
+
+  const timersPendientes = [];
+
+  const resumen = ejecutarTransaccion(() => {
+    const turnosPrevios = db
+      .prepare(`
+        UPDATE turnos
+        SET estado = 'cerrado',
+            resultado = 'no_atendido',
+            hora_fin = ?
+        WHERE fecha_jornada < ?
+          AND estado IN ('espera', 'atendiendo');
+      `)
+      .run(ahora, hoy).changes;
+
+    let turnosPre18 = 0;
+    if (ahora >= corteHoyMs) {
+      turnosPre18 = db
+        .prepare(`
+          UPDATE turnos
+          SET estado = 'cerrado',
+              resultado = 'no_atendido',
+              hora_fin = ?
+          WHERE fecha_jornada = ?
+            AND estado IN ('espera', 'atendiendo')
+            AND hora_creacion < ?;
+        `)
+        .run(ahora, hoy, corteHoyMs).changes;
+    }
+
+    const ventanillas = db.prepare('SELECT * FROM ventanillas ORDER BY numero ASC;').all();
+    let ventanillasReiniciadas = 0;
+    let ventanillasInactivas = 0;
+
+    for (const v of ventanillas) {
+      const fechaUltima = v.ultima_actividad ? fechaLocal(v.ultima_actividad) : null;
+
+      // Si su última actividad fue de un día pasado, reiniciamos su contador de hoy a cero.
+      if (fechaUltima && fechaUltima < hoy) {
+        db.prepare(`
+          UPDATE ventanillas
+          SET estado = 'cerrado',
+              segundos_activos = 0,
+              ultimo_inicio_activo = NULL,
+              ultima_actividad = NULL
+          WHERE ventanilla = ?;
+        `).run(v.ventanilla);
+        ventanillasReiniciadas += 1;
+        continue;
+      }
+
+      if (v.estado === 'cerrado') {
+        continue;
+      }
+
+      // Si ya pasaron las 18:00 y la ventanilla quedó abierta desde antes de las 18:00,
+      // topamos los segundos acumulados hasta la hora real del corte o su límite de 2h.
+      if (ahora >= corteHoyMs && (!v.ultima_actividad || v.ultima_actividad < corteHoyMs)) {
+        const topeInactividad = v.ultima_actividad
+          ? v.ultima_actividad + DOS_HORAS_MS
+          : corteHoyMs;
+        const marcaFin = Math.min(corteHoyMs, topeInactividad);
+
+        db.prepare(`
+          UPDATE ventanillas
+          SET estado = 'cerrado',
+              segundos_activos = ?,
+              ultimo_inicio_activo = NULL,
+              ultima_actividad = ?
+          WHERE ventanilla = ?;
+        `).run(acumularSegundosActivos(v, marcaFin), marcaFin, v.ventanilla);
+
+        liberarTurnosEnAtencion(hoy, v.ventanilla);
+        ventanillasReiniciadas += 1;
+        continue;
+      }
+
+      const transcurridoMs = v.ultima_actividad ? Math.max(0, ahora - v.ultima_actividad) : 0;
+
+      if (transcurridoMs >= DOS_HORAS_MS) {
+        // Si estuvo apagado más de 2 horas, solo contamos hasta el límite real de 2 horas.
+        const marcaLimite = v.ultima_actividad
+          ? Math.min(ahora, v.ultima_actividad + DOS_HORAS_MS)
+          : ahora;
+
+        db.prepare(`
+          UPDATE ventanillas
+          SET estado = 'cerrado',
+              segundos_activos = ?,
+              ultimo_inicio_activo = NULL,
+              ultima_actividad = ?
+          WHERE ventanilla = ?;
+        `).run(acumularSegundosActivos(v, marcaLimite), ahora, v.ventanilla);
+
+        liberarTurnosEnAtencion(hoy, v.ventanilla);
+        ventanillasInactivas += 1;
+      } else {
+        timersPendientes.push({
+          ventanilla: v.ventanilla,
+          restanteMs: DOS_HORAS_MS - transcurridoMs
+        });
+      }
+    }
+
+    return {
+      turnosAnterioresCerrados: turnosPrevios + turnosPre18,
+      ventanillasReiniciadas,
+      ventanillasInactivas
+    };
+  });
+
+  cancelarTodosLosTimersInactividad();
+  for (const item of timersPendientes) {
+    programarTimerInactividad(item.ventanilla, item.restanteMs);
+  }
+
+  if (
+    resumen.turnosAnterioresCerrados > 0 ||
+    resumen.ventanillasReiniciadas > 0 ||
+    resumen.ventanillasInactivas > 0
+  ) {
+    notificarPantallas('saneamiento_ejecutado');
+  }
+
+  return resumen;
+}
+
+// Programa un único aviso exacto para las 18:00:00 (6:00 PM) de hoy o mañana.
+function programarCierreDiario() {
+  if (timerCierreDiario) {
+    clearTimeout(timerCierreDiario);
+  }
+
+  const ahora = new Date();
+  const proximo = new Date(ahora);
+  proximo.setHours(18, 0, 0, 0);
+
+  if (ahora.getTime() >= proximo.getTime()) {
+    proximo.setDate(proximo.getDate() + 1);
+  }
+
+  const esperaMs = Math.max(1, proximo.getTime() - ahora.getTime());
+
+  timerCierreDiario = setTimeout(() => {
+    cerrarJornadaDiaria(Date.now());
+    programarCierreDiario();
+  }, esperaMs);
+
+  if (typeof timerCierreDiario.unref === 'function') {
+    timerCierreDiario.unref();
+  }
+  return esperaMs;
+}
+
+// Programa el reinicio automático de medianoche (00:00:00) para comenzar limpio cada día.
+function programarCambioDeDia() {
+  if (timerCambioDia) {
+    clearTimeout(timerCambioDia);
+  }
+
+  const ahora = new Date();
+  const medianoche = new Date(ahora);
+  medianoche.setHours(24, 0, 0, 0);
+
+  const esperaMs = Math.max(1, medianoche.getTime() - ahora.getTime());
+
+  timerCambioDia = setTimeout(() => {
+    sanearAlArranque(Date.now());
+    notificarPantallas('cambio_de_dia');
+    programarCambioDeDia();
+  }, esperaMs);
+
+  if (typeof timerCambioDia.unref === 'function') {
+    timerCambioDia.unref();
+  }
+  return esperaMs;
+}
+
+function iniciarTareasProgramadas() {
+  sanearAlArranque(Date.now());
+  programarCierreDiario();
+  programarCambioDeDia();
+}
+
+function detenerTareasProgramadas() {
+  if (timerCierreDiario) {
+    clearTimeout(timerCierreDiario);
+    timerCierreDiario = null;
+  }
+  if (timerCambioDia) {
+    clearTimeout(timerCambioDia);
+    timerCambioDia = null;
+  }
+  cancelarTodosLosTimersInactividad();
+}
+
+// --- 6. Rutas de la aplicación web y canal de actualizaciones en vivo ---
+
+// Portal sencillo en la página principal "/" para abrir cualquiera de los 4 módulos.
+app.get('/', (req, res) => {
+  res.type('html').send(`<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sistema de Gestión de Turnos</title>
+  <link rel="stylesheet" href="/estilos.css">
+</head>
+<body>
+  <div class="contenedor">
+    <header class="encabezado-vista">
+      <div>
+        <h1 class="encabezado-titulo">Sistema de Gestión de Turnos</h1>
+        <p class="encabezado-subtitulo">Elija qué pantalla desea abrir en este dispositivo</p>
+      </div>
+    </header>
+    <main>
+      <nav aria-label="Pantallas del sistema" class="rejilla-auto">
+        <a href="/kiosco.html" class="tarjeta-opcion">
+          <span class="opcion-titulo">Kiosco de Turnos</span>
+          <span class="etiqueta etiqueta--caja">Autoservicio</span>
+          <span class="texto-suave">Impresión térmica de tickets para clientes</span>
+        </a>
+        <a href="/pantalla.html" class="tarjeta-opcion">
+          <span class="opcion-titulo">Pantalla Pública</span>
+          <span class="etiqueta etiqueta--ejecutivo">Sala de espera</span>
+          <span class="texto-suave">Turnos llamados en vivo y tiempo estimado</span>
+        </a>
+        <a href="/ventanilla.html" class="tarjeta-opcion">
+          <span class="opcion-titulo">Panel de Ventanilla</span>
+          <span class="etiqueta etiqueta--atencion">Operación</span>
+          <span class="texto-suave">Llamado, atención, pausas y cierre de turno</span>
+        </a>
+        <a href="/dashboard.html" class="tarjeta-opcion">
+          <span class="opcion-titulo">Dashboard</span>
+          <span class="etiqueta etiqueta--activo">Supervisión</span>
+          <span class="texto-suave">Indicadores, gráficas y rendimiento diario</span>
+        </a>
+      </nav>
+    </main>
+  </div>
+</body>
+</html>`);
+});
+
+// Evita avisos 404 en el navegador cuando pide el ícono de pestaña.
 app.get('/favicon.ico', (req, res) => {
   res.status(204).end();
 });
 
-// Canal Server-Sent Events (SSE) para sincronizar pantallas en < 1 segundo.
+// Canal abierto en vivo (SSE): envía cambios al instante y un pulso cada 25 s para mantener viva la conexión.
 app.get('/api/eventos', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
-  clientesSSE.add(res);
+  clientesEnVivo.add(res);
+  res.write(`data: ${JSON.stringify({ tipo: 'conexion_inicial', estado: obtenerEstadoCompleto() })}\n\n`);
 
-  // Enviar snapshot inicial inmediatamente al establecer la conexión.
-  res.write(
-    `data: ${JSON.stringify({ tipo: 'conexion_inicial', estado: obtenerEstadoCompleto() })}\n\n`
-  );
-
-  // Heartbeat cada 25 segundos para evitar cortes por inactividad en proxies o LAN.
-  const intervaloHeartbeat = setInterval(() => {
+  const pulso = setInterval(() => {
     try {
       res.write(': heartbeat\n\n');
     } catch (_) {
-      clearInterval(intervaloHeartbeat);
-      clientesSSE.delete(res);
+      clearInterval(pulso);
+      clientesEnVivo.delete(res);
     }
   }, 25000);
 
-  // Liberar recursos y eliminar el socket al desconectarse el cliente.
   req.on('close', () => {
-    clearInterval(intervaloHeartbeat);
-    clientesSSE.delete(res);
+    clearInterval(pulso);
+    clientesEnVivo.delete(res);
   });
 });
 
-// Retorna el estado completo de la jornada actual para carga inicial y recargas.
+// Entrega el resumen completo del día actual.
 app.get('/api/estado', (req, res) => {
   try {
     res.json(obtenerEstadoCompleto());
   } catch (error) {
-    console.error('[GET /api/estado] Error:', error);
-    res.status(500).json({ error: 'Error al consultar el estado del sistema' });
+    console.error('[GET /api/estado]', error);
+    res.status(500).json({ error: 'No se pudo consultar el estado del sistema' });
   }
 });
 
-// Crea un nuevo turno con folio cíclico 01-99 y auto-asigna si hay ventanilla libre.
+// Crea un turno nuevo con numeración cíclica del 01 al 99 y lo asigna directo si hay ventanilla libre.
 app.post('/api/turnos', (req, res) => {
   const { tipo } = req.body || {};
 
@@ -708,9 +921,8 @@ app.post('/api/turnos', (req, res) => {
   try {
     const { turno, autoAsignado } = ejecutarTransaccion(() => {
       const ahora = Date.now();
-      const hoy = new Date(ahora).toLocaleDateString('en-CA');
+      const hoy = fechaLocal(ahora);
 
-      // Obtener el último folio insertado hoy para este servicio para mantener ciclo 01..99.
       const ultimo = db
         .prepare(`
           SELECT numero_folio
@@ -722,12 +934,11 @@ app.post('/api/turnos', (req, res) => {
         `)
         .get(hoy, tipo);
 
-      const ultimoFolio = ultimo ? ultimo.numero_folio : 0;
-      const siguienteFolio = (ultimoFolio % 99) + 1;
+      // Si llega al 99 en el mismo día, el siguiente turno vuelve a empezar en 01.
+      const siguienteFolio = ((ultimo ? ultimo.numero_folio : 0) % 99) + 1;
       const codigo = `${PREFIJOS_SERVICIO[tipo]}-${String(siguienteFolio).padStart(2, '0')}`;
 
-      // Buscar ventanilla activa de este servicio sin turno en curso,
-      // priorizando estrictamente el menor número (ORDER BY numero ASC LIMIT 1).
+      // Busca la ventanilla activa con número más bajo (1 antes que 2, etc.) que no esté atendiendo.
       const ventanillaLibre = db
         .prepare(`
           SELECT v.ventanilla
@@ -753,20 +964,13 @@ app.post('/api/turnos', (req, res) => {
       const info = db
         .prepare(`
           INSERT INTO turnos (
-            fecha_jornada,
-            numero_folio,
-            codigo,
-            tipo,
-            estado,
-            ventanilla,
-            hora_creacion,
-            hora_llamado
+            fecha_jornada, numero_folio, codigo, tipo, estado,
+            ventanilla, hora_creacion, hora_llamado
           )
           VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         `)
         .run(hoy, siguienteFolio, codigo, tipo, estadoInicial, ventanillaAsignada, ahora, horaLlamado);
 
-      // Si se auto-asignó a una ventanilla libre, renovamos su ultima_actividad.
       if (ventanillaLibre) {
         db.prepare('UPDATE ventanillas SET ultima_actividad = ? WHERE ventanilla = ?;').run(
           ahora,
@@ -778,55 +982,50 @@ app.post('/api/turnos', (req, res) => {
       return {
         turno: {
           ...turnoCreado,
-          fechaHoraImpresion: formatearTicket(ahora)
+          fechaHoraImpresion: formatearFechaHora(ahora)
         },
         autoAsignado: Boolean(ventanillaLibre)
       };
     });
 
     if (autoAsignado && turno.ventanilla) {
-      hooksTimers.alActivarVentanilla(turno.ventanilla);
+      programarTimerInactividad(turno.ventanilla);
     }
 
-    emitirEventoSSE('turno_creado', autoAsignado ? { turnoLlamado: turno } : {});
+    notificarPantallas('turno_creado', autoAsignado ? { turnoLlamado: turno } : {});
     return res.status(201).json({ turno });
   } catch (error) {
-    console.error('[POST /api/turnos] Error:', error);
-    return res.status(500).json({ error: 'Error al generar el turno' });
+    console.error('[POST /api/turnos]', error);
+    return res.status(500).json({ error: 'No se pudo generar el turno' });
   }
 });
 
-// Abre una ventanilla validando bloqueo 409 y auto-asigna el primer turno en espera.
+// Abre una ventanilla cerrada; si alguien más ya la abrió, responde con error 409.
 app.post('/api/ventanillas/abrir', (req, res) => {
   const { ventanilla } = req.body || {};
 
   if (!ventanilla) {
-    return res.status(400).json({ error: 'Debe especificar la ventanilla' });
+    return res.status(400).json({ error: 'Debe indicar qué ventanilla desea abrir' });
   }
 
   try {
     const resultado = ejecutarTransaccion(() => {
       const ahora = Date.now();
-      const hoy = new Date(ahora).toLocaleDateString('en-CA');
+      const hoy = fechaLocal(ahora);
 
       const fila = db
         .prepare('SELECT * FROM ventanillas WHERE ventanilla = ?;')
         .get(ventanilla);
 
       if (!fila) {
-        throw new ErrorHttp(404, 'Ventanilla no encontrada');
+        throw new ErrorNegocio(404, 'Ventanilla no encontrada');
       }
 
-      // Bloqueo atómico de ventanilla duplicada (AGENTS.md §5.1).
       if (fila.estado !== 'cerrado') {
-        throw new ErrorHttp(409, 'La ventanilla ya está en uso');
+        throw new ErrorNegocio(409, 'La ventanilla ya está en uso');
       }
 
-      // Si la última actividad fue de un día anterior, reiniciamos los segundos
-      // acumulados para que el contador del día actual arranque en cero.
-      const esOtroDia =
-        fila.ultima_actividad &&
-        new Date(fila.ultima_actividad).toLocaleDateString('en-CA') !== hoy;
+      const esOtroDia = fila.ultima_actividad && fechaLocal(fila.ultima_actividad) !== hoy;
       const segundosBase = esOtroDia ? 0 : fila.segundos_activos;
 
       db.prepare(`
@@ -838,8 +1037,7 @@ app.post('/api/ventanillas/abrir', (req, res) => {
         WHERE ventanilla = ?;
       `).run(segundosBase, ahora, ahora, ventanilla);
 
-      // Auto-asignar el turno más antiguo en espera si existe cola para su servicio.
-      const turnoActual = desencolarSiguienteTurno(fila.tipo_servicio, ventanilla, ahora, hoy);
+      const turnoActual = tomarSiguienteDeFila(fila.tipo_servicio, ventanilla, ahora, hoy);
       const ventanillaActualizada = db
         .prepare('SELECT * FROM ventanillas WHERE ventanilla = ?;')
         .get(ventanilla);
@@ -847,44 +1045,44 @@ app.post('/api/ventanillas/abrir', (req, res) => {
       return { ventanilla: ventanillaActualizada, turnoActual };
     });
 
-    hooksTimers.alActivarVentanilla(ventanilla);
-    emitirEventoSSE(
+    programarTimerInactividad(ventanilla);
+    notificarPantallas(
       'ventanilla_abierta',
       resultado.turnoActual ? { turnoLlamado: resultado.turnoActual } : {}
     );
     return res.json(resultado);
   } catch (error) {
-    if (error instanceof ErrorHttp) {
+    if (error instanceof ErrorNegocio) {
       return res.status(error.status).json({ error: error.message });
     }
-    console.error('[POST /api/ventanillas/abrir] Error:', error);
-    return res.status(500).json({ error: 'Error al abrir la ventanilla' });
+    console.error('[POST /api/ventanillas/abrir]', error);
+    return res.status(500).json({ error: 'No se pudo abrir la ventanilla' });
   }
 });
 
-// Llama manualmente el turno FIFO más antiguo en espera para una ventanilla activa libre.
+// Llama manualmente al siguiente turno en espera cuando la ventanilla está activa y libre.
 app.post('/api/ventanillas/llamar', (req, res) => {
   const { ventanilla } = req.body || {};
 
   if (!ventanilla) {
-    return res.status(400).json({ error: 'Debe especificar la ventanilla' });
+    return res.status(400).json({ error: 'Debe indicar la ventanilla' });
   }
 
   try {
     const turno = ejecutarTransaccion(() => {
       const ahora = Date.now();
-      const hoy = new Date(ahora).toLocaleDateString('en-CA');
+      const hoy = fechaLocal(ahora);
 
       const fila = db
         .prepare('SELECT * FROM ventanillas WHERE ventanilla = ?;')
         .get(ventanilla);
 
       if (!fila) {
-        throw new ErrorHttp(404, 'Ventanilla no encontrada');
+        throw new ErrorNegocio(404, 'Ventanilla no encontrada');
       }
 
       if (fila.estado !== 'activo') {
-        throw new ErrorHttp(409, 'La ventanilla debe estar activa para llamar un turno');
+        throw new ErrorNegocio(409, 'La ventanilla debe estar activa para llamar un turno');
       }
 
       const enCurso = db
@@ -899,7 +1097,7 @@ app.post('/api/ventanillas/llamar', (req, res) => {
         .get(hoy, ventanilla);
 
       if (enCurso) {
-        throw new ErrorHttp(409, 'La ventanilla ya tiene un turno en atención');
+        throw new ErrorNegocio(409, 'La ventanilla ya tiene un turno en atención');
       }
 
       db.prepare('UPDATE ventanillas SET ultima_actividad = ? WHERE ventanilla = ?;').run(
@@ -907,50 +1105,50 @@ app.post('/api/ventanillas/llamar', (req, res) => {
         ventanilla
       );
 
-      return desencolarSiguienteTurno(fila.tipo_servicio, ventanilla, ahora, hoy);
+      return tomarSiguienteDeFila(fila.tipo_servicio, ventanilla, ahora, hoy);
     });
 
-    hooksTimers.alActivarVentanilla(ventanilla);
+    programarTimerInactividad(ventanilla);
     if (turno) {
-      emitirEventoSSE('turno_llamado', { turnoLlamado: turno });
+      notificarPantallas('turno_llamado', { turnoLlamado: turno });
     }
     return res.json({ turno });
   } catch (error) {
-    if (error instanceof ErrorHttp) {
+    if (error instanceof ErrorNegocio) {
       return res.status(error.status).json({ error: error.message });
     }
-    console.error('[POST /api/ventanillas/llamar] Error:', error);
-    return res.status(500).json({ error: 'Error al llamar al siguiente turno' });
+    console.error('[POST /api/ventanillas/llamar]', error);
+    return res.status(500).json({ error: 'No se pudo llamar al siguiente turno' });
   }
 });
 
-// Cierra un turno con motivo obligatorio y pausa o desencola automáticamente el siguiente.
+// Cierra el turno actual con uno de los 4 motivos y decide si pausar o llamar al siguiente.
 app.post('/api/turnos/cerrar', (req, res) => {
   const { turno_id, ventanilla, resultado, pausar } = req.body || {};
 
   if (!turno_id || !ventanilla) {
-    return res.status(400).json({ error: 'Faltan turno_id o ventanilla' });
+    return res.status(400).json({ error: 'Faltan el identificador del turno o la ventanilla' });
   }
 
-  if (!RESULTADOS_VALIDOS.has(resultado)) {
-    return res.status(400).json({ error: 'Motivo de cierre inválido' });
+  if (!MOTIVOS_VALIDOS.has(resultado)) {
+    return res.status(400).json({ error: 'El motivo de cierre elegido no es válido' });
   }
 
   try {
     const { siguienteTurno } = ejecutarTransaccion(() => {
       const ahora = Date.now();
-      const hoy = new Date(ahora).toLocaleDateString('en-CA');
+      const hoy = fechaLocal(ahora);
 
       const filaVentanilla = db
         .prepare('SELECT * FROM ventanillas WHERE ventanilla = ?;')
         .get(ventanilla);
 
       if (!filaVentanilla) {
-        throw new ErrorHttp(404, 'Ventanilla no encontrada');
+        throw new ErrorNegocio(404, 'Ventanilla no encontrada');
       }
 
       if (filaVentanilla.estado !== 'activo') {
-        throw new ErrorHttp(409, 'La ventanilla no está activa');
+        throw new ErrorNegocio(409, 'La ventanilla no está activa');
       }
 
       const filaTurno = db
@@ -965,10 +1163,9 @@ app.post('/api/turnos/cerrar', (req, res) => {
         .get(Number(turno_id), hoy, ventanilla);
 
       if (!filaTurno) {
-        throw new ErrorHttp(409, 'El turno no está siendo atendido en esta ventanilla');
+        throw new ErrorNegocio(409, 'Este turno ya no está asignado a la ventanilla');
       }
 
-      // Cerrar el turno actual registrando su resultado y marca de fin.
       db.prepare(`
         UPDATE turnos
         SET estado = 'cerrado',
@@ -978,11 +1175,6 @@ app.post('/api/turnos/cerrar', (req, res) => {
       `).run(resultado, ahora, filaTurno.id);
 
       if (Boolean(pausar)) {
-        // Al pasar a pausa consolidamos los segundos activos acumulados hasta este instante.
-        const segundosExtra = filaVentanilla.ultimo_inicio_activo
-          ? Math.max(0, Math.floor((ahora - filaVentanilla.ultimo_inicio_activo) / 1000))
-          : 0;
-
         db.prepare(`
           UPDATE ventanillas
           SET estado = 'pausa',
@@ -990,12 +1182,11 @@ app.post('/api/turnos/cerrar', (req, res) => {
               ultimo_inicio_activo = NULL,
               ultima_actividad = ?
           WHERE ventanilla = ?;
-        `).run(filaVentanilla.segundos_activos + segundosExtra, ahora, ventanilla);
+        `).run(acumularSegundosActivos(filaVentanilla, ahora), ahora, ventanilla);
 
         return { siguienteTurno: null };
       }
 
-      // Si no se pausa, mantenemos la ventanilla activa y llamamos al siguiente en cola.
       db.prepare(`
         UPDATE ventanillas
         SET ultimo_inicio_activo = COALESCE(ultimo_inicio_activo, ?),
@@ -1003,7 +1194,7 @@ app.post('/api/turnos/cerrar', (req, res) => {
         WHERE ventanilla = ?;
       `).run(ahora, ahora, ventanilla);
 
-      const siguiente = desencolarSiguienteTurno(
+      const siguiente = tomarSiguienteDeFila(
         filaVentanilla.tipo_servicio,
         ventanilla,
         ahora,
@@ -1012,45 +1203,42 @@ app.post('/api/turnos/cerrar', (req, res) => {
       return { siguienteTurno: siguiente };
     });
 
-    hooksTimers.alActivarVentanilla(ventanilla);
-    emitirEventoSSE(
-      'turno_cerrado',
-      siguienteTurno ? { turnoLlamado: siguienteTurno } : {}
-    );
+    programarTimerInactividad(ventanilla);
+    notificarPantallas('turno_cerrado', siguienteTurno ? { turnoLlamado: siguienteTurno } : {});
     return res.json({ ok: true, siguienteTurno });
   } catch (error) {
-    if (error instanceof ErrorHttp) {
+    if (error instanceof ErrorNegocio) {
       return res.status(error.status).json({ error: error.message });
     }
-    console.error('[POST /api/turnos/cerrar] Error:', error);
-    return res.status(500).json({ error: 'Error al cerrar el turno' });
+    console.error('[POST /api/turnos/cerrar]', error);
+    return res.status(500).json({ error: 'No se pudo cerrar el turno' });
   }
 });
 
-// Cambia el estado operativo de una ventanilla ("reanudar" desde pausa o "cerrar").
+// Cambia una ventanilla de pausa a activa ("reanudar") o la cierra definitivamente ("cerrar").
 app.post('/api/ventanillas/estado', (req, res) => {
   const { ventanilla, accion } = req.body || {};
 
   if (!ventanilla || (accion !== 'reanudar' && accion !== 'cerrar')) {
-    return res.status(400).json({ error: 'Parámetros inválidos (ventanilla y accion requeridos)' });
+    return res.status(400).json({ error: 'Indique la ventanilla y una acción válida' });
   }
 
   try {
     const respuesta = ejecutarTransaccion(() => {
       const ahora = Date.now();
-      const hoy = new Date(ahora).toLocaleDateString('en-CA');
+      const hoy = fechaLocal(ahora);
 
       const fila = db
         .prepare('SELECT * FROM ventanillas WHERE ventanilla = ?;')
         .get(ventanilla);
 
       if (!fila) {
-        throw new ErrorHttp(404, 'Ventanilla no encontrada');
+        throw new ErrorNegocio(404, 'Ventanilla no encontrada');
       }
 
       if (accion === 'reanudar') {
         if (fila.estado !== 'pausa') {
-          throw new ErrorHttp(409, 'La ventanilla debe estar en pausa para reanudar');
+          throw new ErrorNegocio(409, 'La ventanilla debe estar en pausa para volver a activarse');
         }
 
         db.prepare(`
@@ -1061,14 +1249,12 @@ app.post('/api/ventanillas/estado', (req, res) => {
           WHERE ventanilla = ?;
         `).run(ahora, ahora, ventanilla);
 
-        // Auto-asigna el turno más antiguo en espera si existe fila para su servicio.
-        const siguienteTurno = desencolarSiguienteTurno(fila.tipo_servicio, ventanilla, ahora, hoy);
+        const siguienteTurno = tomarSiguienteDeFila(fila.tipo_servicio, ventanilla, ahora, hoy);
         return { ok: true, siguienteTurno };
       }
 
-      // Acción: cerrar ventanilla. Exigimos finalizar primero cualquier turno activo.
       if (fila.estado === 'cerrado') {
-        throw new ErrorHttp(409, 'La ventanilla ya está cerrada');
+        throw new ErrorNegocio(409, 'La ventanilla ya estaba cerrada');
       }
 
       const turnoEnCurso = db
@@ -1083,13 +1269,8 @@ app.post('/api/ventanillas/estado', (req, res) => {
         .get(hoy, ventanilla);
 
       if (turnoEnCurso) {
-        throw new ErrorHttp(409, 'Debes cerrar el turno actual antes de cerrar la ventanilla');
+        throw new ErrorNegocio(409, 'Cierre primero el turno en atención antes de cerrar la ventanilla');
       }
-
-      const segundosExtra =
-        fila.estado === 'activo' && fila.ultimo_inicio_activo
-          ? Math.max(0, Math.floor((ahora - fila.ultimo_inicio_activo) / 1000))
-          : 0;
 
       db.prepare(`
         UPDATE ventanillas
@@ -1098,485 +1279,71 @@ app.post('/api/ventanillas/estado', (req, res) => {
             ultimo_inicio_activo = NULL,
             ultima_actividad = ?
         WHERE ventanilla = ?;
-      `).run(fila.segundos_activos + segundosExtra, ahora, ventanilla);
+      `).run(acumularSegundosActivos(fila, ahora), ahora, ventanilla);
 
       return { ok: true, siguienteTurno: null };
     });
 
     if (accion === 'reanudar') {
-      hooksTimers.alActivarVentanilla(ventanilla);
-      emitirEventoSSE(
+      programarTimerInactividad(ventanilla);
+      notificarPantallas(
         'ventanilla_reanudada',
         respuesta.siguienteTurno ? { turnoLlamado: respuesta.siguienteTurno } : {}
       );
     } else {
-      hooksTimers.alCerrarVentanilla(ventanilla);
-      emitirEventoSSE('ventanilla_cerrada');
+      cancelarTimerInactividad(ventanilla);
+      notificarPantallas('ventanilla_cerrada');
     }
 
     return res.json(respuesta);
   } catch (error) {
-    if (error instanceof ErrorHttp) {
+    if (error instanceof ErrorNegocio) {
       return res.status(error.status).json({ error: error.message });
     }
-    console.error('[POST /api/ventanillas/estado] Error:', error);
-    return res.status(500).json({ error: 'Error al actualizar el estado de la ventanilla' });
+    console.error('[POST /api/ventanillas/estado]', error);
+    return res.status(500).json({ error: 'No se pudo cambiar el estado de la ventanilla' });
   }
 });
 
-// Ejecuta manualmente o vía cron del servidor el cierre diario de la jornada.
+// Permite ejecutar manualmente (o desde una tarea cron del servidor) el cierre de las 18:00.
 app.post('/api/jornada/cerrar', (req, res) => {
   try {
-    const resultado = cerrarJornadaDiaria(Date.now());
-    return res.json(resultado);
+    return res.json(cerrarJornadaDiaria(Date.now()));
   } catch (error) {
-    console.error('[POST /api/jornada/cerrar] Error:', error);
-    return res.status(500).json({ error: 'Error al cerrar la jornada' });
+    console.error('[POST /api/jornada/cerrar]', error);
+    return res.status(500).json({ error: 'No se pudo cerrar la jornada' });
   }
 });
 
-// Restablece las 7 ventanillas a cero para preparar el día siguiente o repetir pruebas.
+// Reinicia las ventanillas a cero desde el dashboard (y opcionalmente los turnos de prueba de hoy).
 app.post('/api/jornada/reiniciar', (req, res) => {
   const { limpiarTurnosHoy } = req.body || {};
 
   try {
-    const resultado = reiniciarJornada({ limpiarTurnosHoy: Boolean(limpiarTurnosHoy) });
-    return res.json(resultado);
+    return res.json(reiniciarJornada({ limpiarTurnosHoy: Boolean(limpiarTurnosHoy) }));
   } catch (error) {
-    console.error('[POST /api/jornada/reiniciar] Error:', error);
-    return res.status(500).json({ error: 'Error al reiniciar la jornada' });
+    console.error('[POST /api/jornada/reiniciar]', error);
+    return res.status(500).json({ error: 'No se pudo reiniciar la jornada' });
   }
 });
 
-// Middleware defensivo para devolver JSON limpio si el cliente envía un cuerpo malformado.
+// Devuelve un mensaje JSON claro si alguna petición llega con texto mal formado.
 app.use((err, req, res, next) => {
   if (err && err.type === 'entity.parse.failed') {
-    return res.status(400).json({ error: 'Cuerpo JSON inválido' });
+    return res.status(400).json({ error: 'Los datos enviados no tienen un formato JSON válido' });
   }
   return next(err);
 });
 
-// ----------------------------------------------------------------------------
-// 6. Tareas Programadas, Saneamiento y Auto-Cierre por Inactividad (Paso 3)
-// ----------------------------------------------------------------------------
+// --- 7. Arranque inicial ---
 
-// Límite de inactividad permitido para una ventanilla abierta (2 horas = 7,200 s).
-const TIEMPO_INACTIVIDAD_MS = 2 * 60 * 60 * 1000;
-
-// Mapa de temporizadores individuales por ventanilla (máximo 7 activos en RAM),
-// evitando cualquier polling periódico contra SQLite.
-const timersInactividad = new Map();
-
-// Referencias a los timers únicos de cierre diario (18:00) y cambio de día (00:00).
-let timerCierreDiario = null;
-let timerCambioDia = null;
-
-/**
- * Cancela y elimina el timer de inactividad pendiente de una ventanilla.
- *
- * @param {string} nombreVentanilla - Nombre exacto de la ventanilla.
- * @returns {void}
- */
-function cancelarTimerInactividad(nombreVentanilla) {
-  const timer = timersInactividad.get(nombreVentanilla);
-  if (timer) {
-    clearTimeout(timer);
-    timersInactividad.delete(nombreVentanilla);
-  }
-}
-
-/**
- * Cancela todos los timers de inactividad activos (usado al cerrar o reiniciar jornada).
- *
- * @returns {void}
- */
-function cancelarTodosLosTimersInactividad() {
-  for (const timer of timersInactividad.values()) {
-    clearTimeout(timer);
-  }
-  timersInactividad.clear();
-}
-
-/**
- * Cierra una ventanilla específica por superar 2 horas sin actividad (AGENTS.md §5.2):
- * consolida sus segundos activos si estaba 'activo', pasa su estado a 'cerrado',
- * devuelve a 'espera' cualquier turno que tuviera en 'atendiendo' y emite SSE.
- *
- * @param {string} nombreVentanilla - Nombre de la ventanilla a evaluar.
- * @param {number} [ahora=Date.now()] - Marca de tiempo actual.
- * @returns {{ cerrada: boolean, restanteMs?: number }}
- */
-function cerrarVentanillaPorInactividad(nombreVentanilla, ahora = Date.now()) {
-  const hoy = new Date(ahora).toLocaleDateString('en-CA');
-
-  const resultado = ejecutarTransaccion(() => {
-    const fila = db
-      .prepare('SELECT * FROM ventanillas WHERE ventanilla = ?;')
-      .get(nombreVentanilla);
-
-    if (!fila || fila.estado === 'cerrado') {
-      return { cerrada: false };
-    }
-
-    // Comprobar contra SQLite que realmente hayan transcurrido las 2 horas completas.
-    const transcurridoMs = fila.ultima_actividad
-      ? ahora - fila.ultima_actividad
-      : TIEMPO_INACTIVIDAD_MS;
-
-    if (transcurridoMs < TIEMPO_INACTIVIDAD_MS) {
-      return {
-        cerrada: false,
-        restanteMs: TIEMPO_INACTIVIDAD_MS - transcurridoMs
-      };
-    }
-
-    const segundosExtra =
-      fila.estado === 'activo' && fila.ultimo_inicio_activo
-        ? Math.max(0, Math.floor((ahora - fila.ultimo_inicio_activo) / 1000))
-        : 0;
-
-    db.prepare(`
-      UPDATE ventanillas
-      SET estado = 'cerrado',
-          segundos_activos = ?,
-          ultimo_inicio_activo = NULL,
-          ultima_actividad = ?
-      WHERE ventanilla = ?;
-    `).run(fila.segundos_activos + segundosExtra, ahora, nombreVentanilla);
-
-    // Regla AGENTS.md §5.2: devolver a 'espera' cualquier turno en 'atendiendo'.
-    db.prepare(`
-      UPDATE turnos
-      SET estado = 'espera',
-          ventanilla = NULL,
-          hora_llamado = NULL
-      WHERE fecha_jornada = ?
-        AND ventanilla = ?
-        AND estado = 'atendiendo';
-    `).run(hoy, nombreVentanilla);
-
-    return { cerrada: true };
-  });
-
-  if (resultado.restanteMs) {
-    programarTimerInactividad(nombreVentanilla, resultado.restanteMs);
-  } else if (resultado.cerrada) {
-    cancelarTimerInactividad(nombreVentanilla);
-    emitirEventoSSE('ventanilla_inactiva_cerrada', { ventanilla: nombreVentanilla });
-  }
-
-  return resultado;
-}
-
-/**
- * Programa (o reinicia) el timer exacto de 2 horas de inactividad para una ventanilla.
- * Usa .unref() para no impedir el cierre limpio del proceso al detener el servidor.
- *
- * @param {string} nombreVentanilla - Nombre de la ventanilla con actividad reciente.
- * @param {number} [esperaMs=TIEMPO_INACTIVIDAD_MS] - Milisegundos restantes hasta el cierre.
- * @returns {void}
- */
-function programarTimerInactividad(nombreVentanilla, esperaMs = TIEMPO_INACTIVIDAD_MS) {
-  cancelarTimerInactividad(nombreVentanilla);
-
-  const timer = setTimeout(() => {
-    timersInactividad.delete(nombreVentanilla);
-    cerrarVentanillaPorInactividad(nombreVentanilla);
-  }, Math.max(0, esperaMs));
-
-  if (typeof timer.unref === 'function') {
-    timer.unref();
-  }
-  timersInactividad.set(nombreVentanilla, timer);
-}
-
-// Conectar las rutas REST del Paso 2 con los temporizadores de inactividad del Paso 3.
-hooksTimers.alActivarVentanilla = (ventanilla) => programarTimerInactividad(ventanilla);
-hooksTimers.alCerrarVentanilla = (ventanilla) => cancelarTimerInactividad(ventanilla);
-hooksTimers.alCerrarTodas = () => cancelarTodosLosTimersInactividad();
-
-/**
- * Rutina de saneamiento al arrancar server.js o al cambiar de día (medianoche):
- *   1. Cierra como 'no_atendido' cualquier turno abierto de jornadas anteriores.
- *   2. Reinicia a 'cerrado' y segundos_activos = 0 las ventanillas cuya última
- *      actividad pertenezca a una fecha anterior (conservando historial en turnos).
- *   3. Si ya pasaron las 18:00 hrs del día actual y quedaron sesiones/turnos previos
- *      a las 18:00 sin cerrar (p. ej. equipo apagado), aplica el corte pendiente.
- *   4. Para ventanillas abiertas del mismo día, cierra las que superaron 2 horas
- *      sin actividad y reprograma los timers exactos del tiempo restante.
- *
- * @param {number} [ahora=Date.now()] - Marca de tiempo de referencia.
- * @returns {{ turnosAnterioresCerrados: number, ventanillasReiniciadas: number, ventanillasInactivas: number }}
- */
-function sanearAlArranque(ahora = Date.now()) {
-  const fechaRef = new Date(ahora);
-  const hoy = fechaRef.toLocaleDateString('en-CA');
-
-  // Marca exacta de las 18:00:00 del día actual para detectar cortes pendientes si
-  // el servidor estuvo apagado a la hora del cierre diario.
-  const corteHoy = new Date(fechaRef);
-  corteHoy.setHours(18, 0, 0, 0);
-  const corteHoyMs = corteHoy.getTime();
-
-  const timersPendientes = [];
-
-  const resumen = ejecutarTransaccion(() => {
-    // 1. Cerrar turnos abiertos que hayan quedado de jornadas anteriores (< hoy).
-    const infoTurnosPrevios = db
-      .prepare(`
-        UPDATE turnos
-        SET estado = 'cerrado',
-            resultado = 'no_atendido',
-            hora_fin = ?
-        WHERE fecha_jornada < ?
-          AND estado IN ('espera', 'atendiendo');
-      `)
-      .run(ahora, hoy);
-
-    // 2. Si ya pasaron las 18:00 hrs hoy, cerrar únicamente turnos de hoy abiertos
-    // antes de las 18:00:00 (respetando pruebas iniciadas después de las 18:00).
-    let turnosPre18Cerrados = 0;
-    if (ahora >= corteHoyMs) {
-      const infoPre18 = db
-        .prepare(`
-          UPDATE turnos
-          SET estado = 'cerrado',
-               resultado = 'no_atendido',
-              hora_fin = ?
-          WHERE fecha_jornada = ?
-            AND estado IN ('espera', 'atendiendo')
-            AND hora_creacion < ?;
-        `)
-        .run(ahora, hoy, corteHoyMs);
-      turnosPre18Cerrados = infoPre18.changes;
-    }
-
-    // 3. Evaluar el estado de las 7 ventanillas.
-    const ventanillas = db.prepare('SELECT * FROM ventanillas ORDER BY numero ASC;').all();
-    let ventanillasReiniciadas = 0;
-    let ventanillasInactivas = 0;
-
-    for (const v of ventanillas) {
-      const fechaUltimaAct = v.ultima_actividad
-        ? new Date(v.ultima_actividad).toLocaleDateString('en-CA')
-        : null;
-
-      // Si su actividad/acumulado viene de un día anterior, preparamos la nueva
-      // jornada poniendo la ventanilla en cero (el historial ya está en turnos).
-      if (fechaUltimaAct && fechaUltimaAct < hoy) {
-        db.prepare(`
-          UPDATE ventanillas
-          SET estado = 'cerrado',
-              segundos_activos = 0,
-              ultimo_inicio_activo = NULL,
-              ultima_actividad = NULL
-          WHERE ventanilla = ?;
-        `).run(v.ventanilla);
-        ventanillasReiniciadas += 1;
-        continue;
-      }
-
-      if (v.estado === 'cerrado') {
-        continue;
-      }
-
-      // Si ya pasaron las 18:00 hoy y la ventanilla quedó abierta antes de las 18:00.
-      if (ahora >= corteHoyMs && (!v.ultima_actividad || v.ultima_actividad < corteHoyMs)) {
-        const segundosExtra =
-          v.estado === 'activo' && v.ultimo_inicio_activo
-            ? Math.max(0, Math.floor((ahora - v.ultimo_inicio_activo) / 1000))
-            : 0;
-
-        db.prepare(`
-          UPDATE ventanillas
-          SET estado = 'cerrado',
-              segundos_activos = ?,
-              ultimo_inicio_activo = NULL,
-              ultima_actividad = ?
-          WHERE ventanilla = ?;
-        `).run(v.segundos_activos + segundosExtra, ahora, v.ventanilla);
-        ventanillasReiniciadas += 1;
-        continue;
-      }
-
-      // Ventanilla abierta hoy: validar límite de 2 horas de inactividad.
-      const transcurridoMs = v.ultima_actividad
-        ? Math.max(0, ahora - v.ultima_actividad)
-        : 0;
-
-      if (transcurridoMs >= TIEMPO_INACTIVIDAD_MS) {
-        const segundosExtra =
-          v.estado === 'activo' && v.ultimo_inicio_activo
-            ? Math.max(0, Math.floor((ahora - v.ultimo_inicio_activo) / 1000))
-            : 0;
-
-        db.prepare(`
-          UPDATE ventanillas
-          SET estado = 'cerrado',
-              segundos_activos = ?,
-              ultimo_inicio_activo = NULL,
-              ultima_actividad = ?
-          WHERE ventanilla = ?;
-        `).run(v.segundos_activos + segundosExtra, ahora, v.ventanilla);
-
-        db.prepare(`
-          UPDATE turnos
-          SET estado = 'espera',
-              ventanilla = NULL,
-              hora_llamado = NULL
-          WHERE fecha_jornada = ?
-            AND ventanilla = ?
-            AND estado = 'atendiendo';
-        `).run(hoy, v.ventanilla);
-
-        ventanillasInactivas += 1;
-      } else {
-        // Sigue dentro de su ventana de 2 horas: reconstruir tiempo restante.
-        timersPendientes.push({
-          ventanilla: v.ventanilla,
-          restanteMs: TIEMPO_INACTIVIDAD_MS - transcurridoMs
-        });
-      }
-    }
-
-    return {
-      turnosAnterioresCerrados: infoTurnosPrevios.changes + turnosPre18Cerrados,
-      ventanillasReiniciadas,
-      ventanillasInactivas
-    };
-  });
-
-  cancelarTodosLosTimersInactividad();
-  for (const item of timersPendientes) {
-    programarTimerInactividad(item.ventanilla, item.restanteMs);
-  }
-
-  if (
-    resumen.turnosAnterioresCerrados > 0 ||
-    resumen.ventanillasReiniciadas > 0 ||
-    resumen.ventanillasInactivas > 0
-  ) {
-    emitirEventoSSE('saneamiento_ejecutado');
-  }
-
-  return resumen;
-}
-
-/**
- * Programa un único setTimeout exacto para las 18:00:00 (6:00 PM) hora local.
- * Se ejecuta una sola vez al llegar las 18:00 y se reprograma automáticamente
- * para las 18:00:00 del día siguiente, sin interferir con pruebas nocturnas.
- *
- * @returns {number} Milisegundos programados hasta el próximo corte de las 18:00.
- */
-function programarCierreDiario() {
-  if (timerCierreDiario) {
-    clearTimeout(timerCierreDiario);
-  }
-
-  const ahora = new Date();
-  const proximoCierre = new Date(ahora);
-  proximoCierre.setHours(18, 0, 0, 0);
-
-  // Si ya son las 18:00:00 o más tarde, programar para mañana a las 18:00:00.
-  if (ahora.getTime() >= proximoCierre.getTime()) {
-    proximoCierre.setDate(proximoCierre.getDate() + 1);
-  }
-
-  const esperaMs = Math.max(1, proximoCierre.getTime() - ahora.getTime());
-
-  timerCierreDiario = setTimeout(() => {
-    cerrarJornadaDiaria(Date.now());
-    programarCierreDiario();
-  }, esperaMs);
-
-  if (typeof timerCierreDiario.unref === 'function') {
-    timerCierreDiario.unref();
-  }
-
-  return esperaMs;
-}
-
-/**
- * Programa un setTimeout exacto a medianoche (00:00:00) para limpiar el estado
- * operativo de las ventanillas al iniciar el siguiente día, conservando el
- * historial completo en la tabla turnos y notificando por SSE a vistas abiertas.
- *
- * @returns {number} Milisegundos programados hasta la próxima medianoche.
- */
-function programarCambioDeDia() {
-  if (timerCambioDia) {
-    clearTimeout(timerCambioDia);
-  }
-
-  const ahora = new Date();
-  const medianoche = new Date(ahora);
-  medianoche.setHours(24, 0, 0, 0);
-
-  const esperaMs = Math.max(1, medianoche.getTime() - ahora.getTime());
-
-  timerCambioDia = setTimeout(() => {
-    sanearAlArranque(Date.now());
-    emitirEventoSSE('cambio_de_dia');
-    programarCambioDeDia();
-  }, esperaMs);
-
-  if (typeof timerCambioDia.unref === 'function') {
-    timerCambioDia.unref();
-  }
-
-  return esperaMs;
-}
-
-/**
- * Ejecuta el saneamiento inicial y activa los temporizadores automáticos del servidor.
- *
- * @returns {void}
- */
-function iniciarTareasProgramadas() {
-  sanearAlArranque(Date.now());
-  programarCierreDiario();
-  programarCambioDeDia();
-}
-
-/**
- * Detiene todos los temporizadores programados (útil para cierre ordenado o tests).
- *
- * @returns {void}
- */
-function detenerTareasProgramadas() {
-  if (timerCierreDiario) {
-    clearTimeout(timerCierreDiario);
-    timerCierreDiario = null;
-  }
-  if (timerCambioDia) {
-    clearTimeout(timerCambioDia);
-    timerCambioDia = null;
-  }
-  cancelarTodosLosTimersInactividad();
-}
-
-// ----------------------------------------------------------------------------
-// 7. Inicialización y Arranque
-// ----------------------------------------------------------------------------
-
-// Ejecuta la creación de tablas, índices y seed obligatorio al cargar el servidor.
 inicializarBaseDeDatos();
-
-// Ejecuta saneamiento de arranque y activa los timers exactos (18:00, 00:00 e inactividad).
 iniciarTareasProgramadas();
 
-// Inicia la escucha HTTP únicamente si server.js se ejecuta directamente.
 if (require.main === module) {
   app.listen(PUERTO, () => {
-    console.log(`[Sistema de Turnos] Servidor escuchando en http://localhost:${PUERTO}`);
-    console.log(
-      `[Sistema de Turnos] Fecha y hora del servidor: ${new Date().toLocaleString('es-MX', {
-        dateStyle: 'short',
-        timeStyle: 'short',
-        hour12: false
-      })}`
-    );
+    console.log(`[Sistema de Turnos] Servidor listo en http://localhost:${PUERTO}`);
+    console.log(`[Sistema de Turnos] Reloj local: ${formatearFechaHora(Date.now())}`);
   });
 }
 
@@ -1586,15 +1353,14 @@ module.exports = {
   PUERTO,
   CATALOGO_VENTANILLAS,
   PREFIJOS_SERVICIO,
-  RESULTADOS_VALIDOS,
-  TIEMPO_INACTIVIDAD_MS,
-  clientesSSE,
-  hooksTimers,
+  MOTIVOS_VALIDOS,
+  DOS_HORAS_MS,
+  clientesEnVivo,
   timersInactividad,
   ejecutarTransaccion,
   inicializarBaseDeDatos,
   obtenerEstadoCompleto,
-  emitirEventoSSE,
+  notificarPantallas,
   cerrarJornadaDiaria,
   reiniciarJornada,
   cerrarVentanillaPorInactividad,
