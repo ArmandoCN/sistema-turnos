@@ -1,0 +1,15 @@
+{
+  "name": "sistema-turnos",
+  "version": "1.0.0",
+  "description": "Sistema de Turnos",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
