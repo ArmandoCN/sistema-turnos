@@ -1,68 +1,60 @@
 /*
-  Funciones compartidas por todas las pantallas del Sistema de Turnos.
+  comun.js - Funciones que comparten las 4 pantallas del sistema
 
-  Aquí guardamos lo que necesitan en común el kiosco, las ventanillas, la
-  pantalla pública y el dashboard para no repetir código en cada página:
-  - Nombres bonitos para servicios, estados y motivos de cierre.
-  - Formato de fechas y horas según el reloj de Mazatlán (DD/MM/YY HH:mm).
-  - Reloj sincronizado con el servidor.
-  - Envío y lectura de datos al servidor (usando fetch).
-  - Conexión abierta en vivo para actualizar las pantallas al instante (SSE).
-  - Creación sencilla de etiquetas y tarjetas en pantalla.
+  Para no estar copiando y pegando lo mismo en el kiosco, la ventanilla,
+  la pantalla de espera y el dashboard, aquí juntamos:
+  - Los nombres de los 3 servicios, estados de ventanilla y motivos de cierre.
+  - Funciones para darle formato a las fechas, horas y cronómetro.
+  - El reloj de la barra de arriba sincronizado con la hora del servidor.
+  - Funciones para pedir y mandar datos por fetch() y escuchar eventos SSE.
 */
 
-(function iniciarModuloCompartido() {
-  // Catálogo legible de servicios mostrados al usuario.
+(function () {
   const SERVICIOS = {
     caja: 'Caja',
     ejecutivo: 'Ejecutivo',
     atencion: 'Atención a Cliente'
   };
 
-  // Textos claros para el estado actual de cada ventanilla.
   const ESTADOS_VENTANILLA = {
     activo: 'Activa',
     pausa: 'En pausa',
     cerrado: 'Cerrada'
   };
 
-  // Los 4 motivos obligatorios al finalizar la atención de un cliente.
   const MOTIVOS_CIERRE = [
-    { clave: 'atendido', nombre: 'Atendido', claseBoton: 'btn-exito', color: '#10b981' },
-    { clave: 'no_atendido', nombre: 'No atendido', claseBoton: 'btn-alerta', color: '#f59e0b' },
-    { clave: 'no_aparecio', nombre: 'No apareció', claseBoton: 'btn-peligro', color: '#ef4444' },
-    { clave: 'turno_equivocado', nombre: 'Turno equivocado', claseBoton: 'btn-neutro', color: '#64748b' }
+    { clave: 'atendido', nombre: 'Atendido', color: '#10b981' },
+    { clave: 'no_atendido', nombre: 'No atendido', color: '#f59e0b' },
+    { clave: 'no_aparecio', nombre: 'No apareció', color: '#ef4444' },
+    { clave: 'turno_equivocado', nombre: 'Turno equivocado', color: '#64748b' }
   ];
 
-  // Convierte una marca de tiempo numérica al formato "DD/MM/YY HH:mm" en horario de Mazatlán.
+  // Convierte milisegundos a "DD/MM/YY HH:mm" con el horario de Sinaloa (UTC-7 fijo todo el año)
   function formatearFechaHora(ms) {
     if (!ms) return '--/--/-- --:--';
 
-    const opciones = {
-      dateStyle: 'short',
-      timeStyle: 'short',
-      hour12: false,
-      hourCycle: 'h23',
-      timeZone: 'America/Mazatlan'
-    };
+    // Restamos 7 horas a UTC para sacar la hora local de Culiacán/Mazatlán sin importar
+    // cómo tenga configurada la zona horaria la compu o el celular que abre la página.
+    const ajusteSinaloaMs = Number(ms) - 7 * 60 * 60 * 1000;
+    const f = new Date(ajusteSinaloaMs);
 
-    try {
-      return new Date(ms).toLocaleString('es-MX', opciones).replace(',', '');
-    } catch (_) {
-      // Respaldo por si algún dispositivo antiguo no reconoce el nombre de zona horaria.
-      delete opciones.timeZone;
-      return new Date(ms).toLocaleString('es-MX', opciones).replace(',', '');
-    }
+    const dia = String(f.getUTCDate()).padStart(2, '0');
+    const mes = String(f.getUTCMonth() + 1).padStart(2, '0');
+    const anio = String(f.getUTCFullYear()).slice(-2);
+    const horas = String(f.getUTCHours()).padStart(2, '0');
+    const mins = String(f.getUTCMinutes()).padStart(2, '0');
+
+    return `${dia}/${mes}/${anio} ${horas}:${mins}`;
   }
 
-  // Convierte una fecha "AAAA-MM-DD" del servidor a "DD/MM/AA" para mostrar en títulos.
+  // Pasa una fecha "YYYY-MM-DD" a formato corto "DD/MM/YY"
   function formatearFechaCorta(fechaTexto) {
     if (!fechaTexto || !fechaTexto.includes('-')) return '--/--/--';
     const partes = fechaTexto.split('-');
     return `${partes[2]}/${partes[1]}/${partes[0].slice(-2)}`;
   }
 
-  // Convierte una cantidad de segundos a reloj "HH:MM:SS" (por ejemplo 01:05:30).
+  // Convierte segundos a formato de reloj "HH:MM:SS" para el tiempo activo de ventanilla
   function formatearCronometro(totalSegundos) {
     const segs = Math.max(0, Math.floor(totalSegundos || 0));
     const horas = String(Math.floor(segs / 3600)).padStart(2, '0');
@@ -71,7 +63,7 @@
     return `${horas}:${minutos}:${segundos}`;
   }
 
-  // Convierte segundos a un texto fácil de leer en las tarjetas de promedio ("45 s", "2 min 10 s").
+  // Da formato legible a los promedios del dashboard ("35 s", "4 min 15 s")
   function formatearPromedio(totalSegundos) {
     const segs = Math.max(0, Math.round(totalSegundos || 0));
     if (segs < 60) {
@@ -82,32 +74,31 @@
     return resto > 0 ? `${minutos} min ${resto} s` : `${minutos} min`;
   }
 
-  // Controla el reloj superior de cada pantalla calculando la diferencia contra el servidor,
-  // así todas las computadoras muestran exactamente la misma hora aunque su reloj local esté desajustado.
+  // Maneja el reloj del encabezado tomando como base la hora que manda el servidor
   function crearReloj(elementoReloj) {
-    let diferenciaMs = 0;
+    let desfaseMs = 0;
 
     function actualizar() {
       if (elementoReloj) {
-        elementoReloj.textContent = formatearFechaHora(Date.now() + diferenciaMs);
+        elementoReloj.textContent = formatearFechaHora(Date.now() + desfaseMs);
       }
     }
 
-    function sincronizar(ahoraServidorMs) {
-      if (typeof ahoraServidorMs === 'number') {
-        diferenciaMs = ahoraServidorMs - Date.now();
+    function sincronizar(horaServidorMs) {
+      if (typeof horaServidorMs === 'number') {
+        desfaseMs = horaServidorMs - Date.now();
       }
       actualizar();
     }
 
     function ahoraMs() {
-      return Date.now() + diferenciaMs;
+      return Date.now() + desfaseMs;
     }
 
     return { sincronizar, actualizar, ahoraMs };
   }
 
-  // Consulta al servidor el resumen completo del día (turnos, ventanillas y métricas).
+  // Pide el estado general del día al servidor
   async function obtenerEstado() {
     const respuesta = await fetch('/api/estado');
     if (!respuesta.ok) {
@@ -116,7 +107,7 @@
     return respuesta.json();
   }
 
-  // Envía datos al servidor usando JSON y devuelve su respuesta. Si algo falla, lanza un mensaje claro.
+  // Manda una petición POST en JSON al servidor y regresa la respuesta o lanza el error
   async function enviarDatos(ruta, datos) {
     const respuesta = await fetch(ruta, {
       method: 'POST',
@@ -131,7 +122,7 @@
     return cuerpo;
   }
 
-  // Abre una ventana de aviso (<dialog>) con el mensaje de error si no estaba abierta ya.
+  // Muestra un cuadro <dialog> con un mensaje de aviso o error
   function mostrarAviso(dialogo, elementoMensaje, texto) {
     if (!dialogo || !elementoMensaje) return;
     elementoMensaje.textContent = texto;
@@ -140,65 +131,50 @@
     }
   }
 
-  // Mantiene una conexión en vivo con el servidor (/api/eventos) para recibir cambios al instante
-  // y actualizar el indicador verde/rojo ("En vivo" / "Reconectando...") del encabezado.
+  // Abre el canal de Server-Sent Events (/api/eventos) para recibir cambios al momento
   function conectarEnVivo({ cajaEstado, textoEstado, alRecibir }) {
-    let canal = null;
+    const canal = new EventSource('/api/eventos');
 
-    function iniciar() {
-      if (canal) {
-        canal.close();
-      }
+    canal.onopen = () => {
+      if (cajaEstado) cajaEstado.className = 'estado-sse estado-sse--conectado';
+      if (textoEstado) textoEstado.textContent = 'En vivo';
+    };
 
-      canal = new EventSource('/api/eventos');
-
-      canal.onopen = () => {
-        if (cajaEstado) cajaEstado.className = 'estado-sse estado-sse--conectado';
-        if (textoEstado) textoEstado.textContent = 'En vivo';
-      };
-
-      canal.onmessage = (evento) => {
-        try {
-          const aviso = JSON.parse(evento.data);
-          if (aviso && aviso.estado && typeof alRecibir === 'function') {
-            alRecibir(aviso);
-          }
-        } catch (_) {
-          // Si llega un mensaje incompleto, lo ignoramos sin cortar la conexión.
+    canal.onmessage = (evento) => {
+      try {
+        const datos = JSON.parse(evento.data);
+        if (datos && datos.estado && typeof alRecibir === 'function') {
+          alRecibir(datos);
         }
-      };
-
-      canal.onerror = () => {
-        if (cajaEstado) cajaEstado.className = 'estado-sse estado-sse--error';
-        if (textoEstado) textoEstado.textContent = 'Reconectando...';
-      };
-    }
-
-    iniciar();
-    return {
-      cerrar: () => {
-        if (canal) canal.close();
+      } catch (_) {
+        // Si algún mensaje llega cortado lo ignoramos
       }
+    };
+
+    canal.onerror = () => {
+      if (cajaEstado) cajaEstado.className = 'estado-sse estado-sse--error';
+      if (textoEstado) textoEstado.textContent = 'Reconectando...';
     };
   }
 
-  // Ayudante corto para crear etiquetas HTML de forma segura (siempre usando textContent).
+  // Crea un elemento HTML de forma rápida y segura usando textContent
   function crearElemento(etiqueta, { clase, texto, atributos, hijos } = {}) {
-    const nodo = document.createElement(etiqueta);
-    if (clase) nodo.className = clase;
-    if (texto !== undefined && texto !== null) nodo.textContent = String(texto);
+    const el = document.createElement(etiqueta);
+    if (clase) el.className = clase;
+    if (texto !== undefined && texto !== null) el.textContent = String(texto);
     if (atributos) {
       for (const [clave, valor] of Object.entries(atributos)) {
-        nodo.setAttribute(clave, valor);
+        el.setAttribute(clave, valor);
       }
     }
     if (hijos) {
-      nodo.append(...hijos);
+      for (const hijo of hijos) {
+        if (hijo) el.appendChild(hijo);
+      }
     }
-    return nodo;
+    return el;
   }
 
-  // Dejamos disponibles todas las funciones compartidas bajo un solo nombre global.
   window.TurnosUI = {
     SERVICIOS,
     ESTADOS_VENTANILLA,
