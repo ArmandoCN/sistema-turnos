@@ -1,85 +1,123 @@
 # Sistema de Gestión de Turnos — Guía para correr el proyecto desde cero
 
-Esta guía explica paso a paso cómo hacer funcionar el proyecto en tu computadora **suponiendo que solo tienes instalado Visual Studio Code y nada más**.
+Esta guía explica paso a paso cómo preparar las herramientas, jalar el repositorio y correr el proyecto **suponiendo que solo tienes instalado Visual Studio Code y nada más**.
 
 ---
 
-## Paso 1: Instalar Node.js (obligatorio)
-
-Como el servidor y la base de datos funcionan con **Node.js**, lo primero es instalarlo:
-
-1. Entra a la página oficial: [https://nodejs.org/](https://nodejs.org/)
-2. Descarga el instalador de la versión **22 LTS (22.13.0 o superior)** o la más reciente disponible.
-   > **Importante:** Tiene que ser mínimo la versión **22.13.0** porque el proyecto usa `node:sqlite` (la base de datos que ya viene integrada dentro de Node, para no batallar instalando programas extra de bases de datos).
-3. Abre el instalador que descargaste y dale en **Next → Next → Install** dejando todas las opciones como vienen por defecto.
-4. **Muy importante:** Si ya tenías abierto Visual Studio Code, **ciérralo por completo y vuélvelo a abrir** para que detecte que ya instalaste Node.js.
-
----
-
-## Paso 2: Tener la carpeta del proyecto en tu computadora
-
-Si no tienes Git instalado, la forma más rápida es:
-
-1. Si bajaste el proyecto como archivo **`.zip`** (desde GitHub en el botón verde **Code → Download ZIP** o si te lo pasaron por USB/Drive):
-   * Haz clic derecho sobre el archivo `.zip` y selecciona **Extraer todo...** (no abras los archivos desde adentro del zip sin descomprimir).
-2. Guarda la carpeta descomprimida en un lugar fácil de encontrar, por ejemplo en tu **Escritorio** o en **Documentos**.
-
----
-
-## Paso 3: Abrir el proyecto en Visual Studio Code
+## Paso 1: Revisar e instalar Git y Node.js desde la terminal de VS Code
 
 1. Abre **Visual Studio Code**.
-2. Arriba a la izquierda haz clic en **Archivo → Abrir carpeta...** (*File → Open Folder...*).
-3. Busca y selecciona la carpeta del proyecto (donde están los archivos `server.js` y `package.json`) y dale en **Seleccionar carpeta**.
-4. Si VS Code te pregunta *"¿Confías en los autores de los archivos de esta carpeta?"*, marca que **Sí, confío**.
+2. En el menú superior haz clic en **Terminal → Nueva terminal** (o usa el atajo `Ctrl + Ñ` / `` Ctrl + ` ``). Abajo se abrirá la consola.
 
 ---
 
-## Paso 4: Abrir la terminal dentro de VS Code
+### 1.1 Revisar si tienes Git
+Escribe en la terminal de VS Code:
+```bash
+git --version
+```
+* **Si te muestra una versión** (ej. `git version 2.x.x`), ya lo tienes listo.
+* **Si te marca error** diciendo que no se reconoce `git`, puedes instalarlo ahí mismo desde la terminal o bajando el instalador:
 
-1. En el menú de arriba de VS Code haz clic en **Terminal → Nueva terminal** (también puedes usar el atajo `Ctrl + Ñ` o `` Ctrl + ` ``).
-2. En la parte de abajo se abrirá un panel de consola.
-3. Para comprobar que Node.js se instaló bien en el Paso 1, escribe esto y presiona **Enter**:
+  * **Opción A — Instalar Git desde la terminal de VS Code:**
+    * En **Windows (10 / 11)**:
+      ```powershell
+      winget install --id Git.Git -e --source winget
+      ```
+    * En **Linux (Ubuntu / Debian)**:
+      ```bash
+      sudo apt update && sudo apt install -y git
+      ```
+  * **Opción B — Descargar el instalador desde el navegador:**
+    * Entra a [https://git-scm.com/](https://git-scm.com/), descarga el instalador y dale en **Next → Next → Install**.
+
+---
+
+### 1.2 Revisar si tienes Node.js (v22.13.0 o superior)
+Escribe en la terminal de VS Code:
+```bash
+node -v
+```
+* **Si te responde `v22.13.0` o un número mayor**, ya tienes Node listo.
+* **Si no lo tienes instalado o tienes una versión más vieja (como v18 o v20):**
+  > **Importante:** Se ocupa mínimo la versión **22.13.0** porque el proyecto usa `node:sqlite` (la base de datos que ya viene integrada dentro de Node).
+
+  * **Opción A — Instalar Node.js desde la terminal de VS Code:**
+    * En **Windows (10 / 11)**:
+      ```powershell
+      winget install OpenJS.NodeJS.LTS
+      ```
+    * En **Linux (Ubuntu / Debian)**:
+      ```bash
+      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+      sudo apt install -y nodejs
+      ```
+  * **Opción B — Descargar el instalador desde el navegador:**
+    * Entra a [https://nodejs.org/](https://nodejs.org/), descarga la versión **22 LTS (22.13.0 o superior)** y dale en **Next → Next → Install**.
+
+> **Muy importante:** Si acabas de instalar Git o Node.js, **cierra Visual Studio Code por completo y vuélvelo a abrir** para que la terminal reconozca los comandos `git`, `node` y `npm`.
+
+---
+
+## Paso 2: Jalar (clonar) el repositorio desde GitHub
+
+Ya con Git instalado, puedes jalar el proyecto desde la terminal o con los botones de VS Code:
+
+### Opción A: Desde la terminal de VS Code
+1. Abre la terminal (`Terminal → Nueva terminal`) y escribe:
    ```bash
-   node -v
+   git clone https://github.com/ArmandoCN/sistema-turnos.git
    ```
-   Te debe responder algo como `v22.13.0` (o un número mayor).
+2. Luego abre la carpeta recién descargada en VS Code: ve arriba a **Archivo → Abrir carpeta...** (*File → Open Folder...*), selecciona la carpeta **`sistema-turnos`** y dale en **Seleccionar carpeta**.
+
+### Opción B: Con el botón de VS Code (sin comandos)
+1. En la barra izquierda de VS Code haz clic en el ícono de **Control de código fuente** (el de la ramita, o presiona `Ctrl + Shift + G`).
+2. Haz clic en **Clonar repositorio** (*Clone Repository*).
+3. Pega la dirección del repositorio arriba y presiona **Enter**:
+   ```text
+   https://github.com/ArmandoCN/sistema-turnos.git
+   ```
+   *(Si te pide iniciar sesión con tu cuenta de GitHub, dale en **Allow / Permitir**).*
+4. Elige dónde guardarlo (por ejemplo en **Escritorio** o **Documentos**) y cuando termine dale clic al botón **Abrir** (*Open*).
+
+*(Nota: Cuando quieras jalar los últimos cambios que se hayan subido a GitHub, solo abre la terminal en VS Code y escribe **`git pull`**).*
+
+---
+
+## Paso 3: Instalar Express y encender el servidor desde la terminal
+
+Con la carpeta `sistema-turnos` abierta en VS Code, abre la terminal (**Terminal → Nueva terminal**):
 
 > **¿Te salió un error rojo en Windows al usar `npm`?**  
-> A veces Windows bloquea comandos en PowerShell y dice *"la ejecución de scripts está deshabilitada en este sistema"*. Si te pasa, tienes dos opciones muy fáciles:
-> * **Opción rápida:** En la esquina derecha de la terminal de VS Code, junto al signo **`+`**, haz clic en la flechita **`v`** y elige **Command Prompt (cmd)** en lugar de PowerShell.
-> * **O bien:** Escribe este comando en la terminal de PowerShell, dale Enter y listo:
+> A veces PowerShell en Windows bloquea `npm` y dice *"la ejecución de scripts está deshabilitada en este sistema"*. Si te pasa:
+> * **Solución en 1 clic:** En la esquina derecha de la terminal de VS Code, junto al signo **`+`**, haz clic en la flechita **`v`** y elige **Command Prompt (cmd)** en vez de PowerShell.
+> * **O ejecuta esto en PowerShell:**
 >   ```powershell
 >   Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 >   ```
 
----
-
-## Paso 5: Instalar dependencias y encender el servidor
-
-Dentro de la terminal de VS Code escribe estos dos comandos:
-
-1. **Instalar Express (solo se hace la primera vez):**
+1. **Instalar Express desde la terminal de VS Code (solo se hace la primera vez):**
    ```bash
    npm install
    ```
-   *(Espera unos segundos a que termine de crear la carpeta `node_modules`).*
+   *(O si prefieres instalar el paquete directamente: `npm install express`).*
 
 2. **Encender el servidor:**
    ```bash
    npm start
    ```
+   *(También puedes arrancarlo escribiendo `node server.js`).*
 
-Cuando veas este mensaje en la terminal, el sistema ya está corriendo y la base de datos `turnos.db` ya se creó sola:
+Cuando veas este mensaje en la terminal, el servidor ya está corriendo y la base de datos `turnos.db` ya se creó sola:
 ```text
 [Sistema de Turnos] Servidor corriendo en http://localhost:4782
 ```
 
-*(Nota: No cierres la terminal mientras estés usando el sistema. Cuando quieras apagar el servidor, haz clic en la terminal y presiona `Ctrl + C`).*
+*(Para apagar el servidor cuando termines, haz clic en la terminal y presiona `Ctrl + C`).*
 
 ---
 
-## Paso 6: Cómo abrir y probar las 4 pantallas del sistema
+## Paso 4: Cómo abrir y probar las 4 pantallas del sistema
 
 Con el servidor encendido, abre tu navegador (Chrome o Edge) y entra a **`http://localhost:4782`** (o mantén presionado `Ctrl` y dale clic al enlace directo en la terminal de VS Code).
 
