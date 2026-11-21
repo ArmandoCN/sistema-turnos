@@ -1,14 +1,15 @@
 <!DOCTYPE html>
 <html lang="es">
 <!--
-  Pantalla Pública para la sala de espera (pensada para un monitor o televisor).
+  pantalla.html - Pantalla pública para la sala de espera (TV o monitor)
 
-  Funciona totalmente sola sin teclado ni mouse:
-  - Muestra en grande los turnos que están siendo llamados y a qué ventanilla pasar.
-  - Muestra el tiempo aproximado de espera de cada servicio y los próximos turnos en fila.
-  - Se actualiza al instante cada vez que cambia algo en el sistema.
-  - Reproduce un timbre suave ("din-don") generado por el propio navegador cuando
-    llama a un turno nuevo, sin depender de archivos de sonido externos.
+  Esta pantalla no ocupa teclado ni mouse:
+  - Muestra en grande el último turno llamado y los demás turnos que se están atendiendo.
+  - Muestra el tiempo estimado de espera de cada servicio y los próximos turnos en fila.
+  - Cuando llega un llamado nuevo por SSE, genera un timbre de dos tonos ("din-don")
+    usando Web Audio API para no depender de archivos .mp3 externos.
+  Nota: en la TV se recomienda abrir Chrome con "--autoplay-policy=no-user-gesture-required"
+  para que el navegador deje sonar el timbre desde el primer turno sin pedir clic previo.
 -->
 <head>
   <meta charset="UTF-8">
@@ -33,7 +34,7 @@
     </header>
 
     <main class="rejilla-dividida">
-      <!-- Turnos que se están atendiendo en este momento -->
+      <!-- Lado izquierdo: Turnos que están pasando a ventanilla -->
       <section class="panel" aria-labelledby="titulo-llamados">
         <h2 id="titulo-llamados" class="pantalla-titulo">Turnos Llamados</h2>
         <div id="lista-llamados" class="lista-llamados" aria-live="polite">
@@ -41,7 +42,7 @@
         </div>
       </section>
 
-      <!-- Tiempos aproximados de espera y lista de espera en orden de llegada -->
+      <!-- Lado derecho: Tiempo estimado por servicio y próximos en fila -->
       <aside class="panel" aria-labelledby="titulo-espera">
         <h2 id="titulo-espera" class="pantalla-titulo">Tiempo Estimado de Espera</h2>
 
@@ -71,7 +72,7 @@
   <script src="/comun.js"></script>
   <script>
     const UI = window.TurnosUI;
-    const MAX_ESPERA_VISIBLE = 10;
+    const LIMITE_FILA_VISIBLE = 10;
 
     const listaLlamados = document.getElementById('lista-llamados');
     const estimadoCaja = document.getElementById('estimado-caja');
@@ -82,65 +83,60 @@
     const esperaRestantes = document.getElementById('espera-restantes');
 
     const reloj = UI.crearReloj(document.getElementById('reloj-servidor'));
-    let contextoAudio = null;
-    // Recordamos el último llamado que ya sonó para no repetir el timbre al recargar la página.
-    let ultimoLlamadoSonado = null;
+    let audioCtx = null;
+    let ultimoTurnoSonado = null;
 
-    // Prepara el generador de audio del navegador. Cuando el televisor abre Chrome en modo kiosco
-    // con permiso automático de audio, suena directo sin necesidad de hacer clic primero.
-    function obtenerAudio() {
-      const AudioCtor = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtor) return null;
-      if (!contextoAudio) {
-        contextoAudio = new AudioCtor();
+    function obtenerAudioContext() {
+      const AudioClase = window.AudioContext || window.webkitAudioContext;
+      if (!AudioClase) return null;
+      if (!audioCtx) {
+        audioCtx = new AudioClase();
       }
-      return contextoAudio;
+      return audioCtx;
     }
 
-    // Genera un timbre suave de dos tonos ("din-don") mediante ondas de sonido del navegador.
-    async function reproducirTimbre() {
-      const audio = obtenerAudio();
-      if (!audio) return;
+    // Genera el sonido de timbre ("din-don") con dos frecuencias usando el navegador
+    async function sonarTimbre() {
+      const ctx = obtenerAudioContext();
+      if (!ctx) return;
 
       try {
-        if (audio.state === 'suspended') {
-          await audio.resume();
+        if (ctx.state === 'suspended') {
+          await ctx.resume();
         }
 
-        const inicio = audio.currentTime;
-        const notas = [
-          { frecuencia: 659.25, retraso: 0, duracion: 0.35 },
-          { frecuencia: 880.0, retraso: 0.18, duracion: 0.55 }
+        const ahora = ctx.currentTime;
+        const tonos = [
+          { freq: 659.25, inicio: 0, duracion: 0.35 },
+          { freq: 880.0, inicio: 0.18, duracion: 0.55 }
         ];
 
-        for (const nota of notas) {
-          const oscilador = audio.createOscillator();
-          const volumen = audio.createGain();
+        for (const t of tonos) {
+          const osc = ctx.createOscillator();
+          const ganancia = ctx.createGain();
 
-          oscilador.type = 'sine';
-          oscilador.frequency.setValueAtTime(nota.frecuencia, inicio + nota.retraso);
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(t.freq, ahora + t.inicio);
 
-          // Subimos rápido el volumen y lo bajamos poco a poco para evitar chasquidos.
-          volumen.gain.setValueAtTime(0.001, inicio + nota.retraso);
-          volumen.gain.exponentialRampToValueAtTime(0.28, inicio + nota.retraso + 0.02);
-          volumen.gain.exponentialRampToValueAtTime(0.001, inicio + nota.retraso + nota.duracion);
+          ganancia.gain.setValueAtTime(0.001, ahora + t.inicio);
+          ganancia.gain.exponentialRampToValueAtTime(0.28, ahora + t.inicio + 0.02);
+          ganancia.gain.exponentialRampToValueAtTime(0.001, ahora + t.inicio + t.duracion);
 
-          oscilador.connect(volumen);
-          volumen.connect(audio.destination);
+          osc.connect(ganancia);
+          ganancia.connect(ctx.destination);
 
-          oscilador.start(inicio + nota.retraso);
-          oscilador.stop(inicio + nota.retraso + nota.duracion + 0.02);
+          osc.start(ahora + t.inicio);
+          osc.stop(ahora + t.inicio + t.duracion + 0.02);
         }
       } catch (_) {
-        // Si se abrió manualmente sin permiso de autoplay, evitamos mostrar errores en consola.
+        // Si el navegador bloqueó el audio por abrirse sin flag de kiosco, no tronamos la vista
       }
     }
 
-    // Dibuja los turnos actualmente en atención (el más reciente va destacado al principio).
-    function dibujarLlamados(turnosAtendiendo, esNuevoLlamado) {
+    function pintarLlamados(turnosEnAtencion, resaltarPrimero) {
       listaLlamados.textContent = '';
 
-      if (!turnosAtendiendo || turnosAtendiendo.length === 0) {
+      if (!turnosEnAtencion || turnosEnAtencion.length === 0) {
         listaLlamados.appendChild(
           UI.crearElemento('p', {
             clase: 'texto-suave',
@@ -150,16 +146,16 @@
         return;
       }
 
-      turnosAtendiendo.forEach((turno, indice) => {
-        let claseTarjeta = 'tarjeta-llamado';
-        if (indice === 0) {
-          claseTarjeta += ' tarjeta-llamado--principal';
-          if (esNuevoLlamado) {
-            claseTarjeta += ' tarjeta-llamado--nuevo';
+      turnosEnAtencion.forEach((turno, idx) => {
+        let clase = 'tarjeta-llamado';
+        if (idx === 0) {
+          clase += ' tarjeta-llamado--principal';
+          if (resaltarPrimero) {
+            clase += ' tarjeta-llamado--nuevo';
           }
         }
 
-        const izquierda = UI.crearElemento('div', {
+        const colIzquierda = UI.crearElemento('div', {
           hijos: [
             UI.crearElemento('div', { clase: 'llamado-codigo', texto: turno.codigo }),
             UI.crearElemento('span', {
@@ -169,22 +165,21 @@
           ]
         });
 
-        const derecha = UI.crearElemento('div', {
+        const colDerecha = UI.crearElemento('div', {
           clase: 'llamado-ventanilla',
           texto: turno.ventanilla || ''
         });
 
         listaLlamados.appendChild(
           UI.crearElemento('article', {
-            clase: claseTarjeta,
-            hijos: [izquierda, derecha]
+            clase,
+            hijos: [colIzquierda, colDerecha]
           })
         );
       });
     }
 
-    // Actualiza los tiempos estimados y la fila de próximos turnos ordenados por llegada.
-    function dibujarEspera(tiempos, proximos) {
+    function pintarFilaEspera(tiempos, proximos) {
       if (tiempos) {
         estimadoCaja.textContent = tiempos.caja || '5 min';
         estimadoEjecutivo.textContent = tiempos.ejecutivo || '5 min';
@@ -200,9 +195,9 @@
       }
 
       esperaVacia.classList.add('oculto');
-      const visibles = proximos.slice(0, MAX_ESPERA_VISIBLE);
+      const primeros = proximos.slice(0, LIMITE_FILA_VISIBLE);
 
-      for (const turno of visibles) {
+      for (const turno of primeros) {
         listaEspera.appendChild(
           UI.crearElemento('li', {
             clase: 'item-espera',
@@ -217,52 +212,51 @@
         );
       }
 
-      const ocultos = proximos.length - visibles.length;
-      if (ocultos > 0) {
-        esperaRestantes.textContent = `+ ${ocultos} turnos adicionales en espera`;
+      const sobran = proximos.length - primeros.length;
+      if (sobran > 0) {
+        esperaRestantes.textContent = `+ ${sobran} turnos adicionales en espera`;
         esperaRestantes.classList.remove('oculto');
       } else {
         esperaRestantes.classList.add('oculto');
       }
     }
 
-    function aplicarEstado(estado, turnoLlamado = null) {
+    function actualizarPantalla(estado, turnoRecienLlamado = null) {
       if (!estado) return;
       reloj.sincronizar(estado.ahora);
 
-      let esNuevoLlamado = false;
-      if (turnoLlamado && turnoLlamado.id) {
-        const clave = `${turnoLlamado.id}-${turnoLlamado.hora_llamado || ''}`;
-        if (clave !== ultimoLlamadoSonado) {
-          ultimoLlamadoSonado = clave;
-          esNuevoLlamado = true;
-          reproducirTimbre();
+      let esNuevo = false;
+      if (turnoRecienLlamado && turnoRecienLlamado.id) {
+        const llave = `${turnoRecienLlamado.id}-${turnoRecienLlamado.hora_llamado || ''}`;
+        if (llave !== ultimoTurnoSonado) {
+          ultimoTurnoSonado = llave;
+          esNuevo = true;
+          sonarTimbre();
         }
       }
 
-      dibujarLlamados(estado.turnosAtendiendo || [], esNuevoLlamado);
-      dibujarEspera(estado.tiemposEstimados, estado.proximosEspera || []);
+      pintarLlamados(estado.turnosAtendiendo || [], esNuevo);
+      pintarFilaEspera(estado.tiemposEstimados, estado.proximosEspera || []);
     }
 
-    // Respaldo por si alguien abre esta vista en una PC normal sin políticas de kiosco:
-    // desbloquea el audio al primer toque o tecla.
-    function desbloquearAudio() {
-      const audio = obtenerAudio();
-      if (audio && audio.state === 'suspended') {
-        audio.resume().catch(() => {});
+    // Por si la abren en una compu normal sin flag de autoplay, activamos el audio al primer clic
+    function activarAudioManual() {
+      const ctx = obtenerAudioContext();
+      if (ctx && ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
       }
     }
-    window.addEventListener('pointerdown', desbloquearAudio, { once: true });
-    window.addEventListener('keydown', desbloquearAudio, { once: true });
+    window.addEventListener('pointerdown', activarAudioManual, { once: true });
+    window.addEventListener('keydown', activarAudioManual, { once: true });
 
     UI.obtenerEstado()
-      .then((estado) => aplicarEstado(estado, null))
+      .then((estado) => actualizarPantalla(estado, null))
       .catch(() => {});
 
     UI.conectarEnVivo({
       cajaEstado: document.getElementById('estado-sse'),
       textoEstado: document.getElementById('texto-sse'),
-      alRecibir: (aviso) => aplicarEstado(aviso.estado, aviso.turnoLlamado || null)
+      alRecibir: (datos) => actualizarPantalla(datos.estado, datos.turnoLlamado || null)
     });
 
     setInterval(() => reloj.actualizar(), 15000);

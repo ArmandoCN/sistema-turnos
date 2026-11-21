@@ -1,11 +1,12 @@
 <!DOCTYPE html>
 <html lang="es">
 <!--
-  Pantalla del Kiosco (Autoservicio para clientes).
+  kiosco.html - Pantalla táctil de autoservicio para clientes
 
-  Aquí el cliente toca el servicio que necesita (Caja, Ejecutivo o Atención a Cliente),
-  se genera su turno en el servidor, se manda a imprimir el ticket en rollo térmico de
-  58 mm y después de 3 segundos la pantalla vuelve sola al inicio para el siguiente cliente.
+  Aquí llega el cliente, toca el botón del servicio que ocupa (Caja, Ejecutivo o Atención),
+  se pide el turno al servidor y se manda a imprimir en la impresora térmica de 58 mm.
+  Nota: en la terminal del kiosco se recomienda abrir Chrome con "--kiosk --kiosk-printing"
+  para que el ticket salga directo sin mostrar la ventana de confirmación de impresión.
 -->
 <head>
   <meta charset="UTF-8">
@@ -26,7 +27,7 @@
     </header>
 
     <main class="kiosco-principal">
-      <!-- Botones grandes para pantalla táctil -->
+      <!-- Botones grandes para elegir servicio -->
       <section id="pantalla-seleccion" aria-labelledby="instruccion-kiosco">
         <p id="instruccion-kiosco" class="kiosco-instruccion">Toque una opción para generar su turno</p>
 
@@ -51,7 +52,7 @@
         </div>
       </section>
 
-      <!-- Confirmación temporal que ve el cliente mientras sale el ticket -->
+      <!-- Recuadro de confirmación mientras sale el ticket impreso -->
       <section id="pantalla-confirmacion" class="panel kiosco-confirmacion oculto" aria-live="polite">
         <p class="texto-suave">Su turno generado es</p>
         <p id="confirmacion-codigo" class="kiosco-confirmacion-codigo">---</p>
@@ -61,7 +62,7 @@
     </main>
   </div>
 
-  <!-- Ventana emergente por si falla la conexión con el servidor -->
+  <!-- Aviso en caso de que falle la red o el servidor -->
   <dialog id="modal-error" class="modal modal-error" aria-labelledby="modal-error-titulo">
     <h2 id="modal-error-titulo" class="modal-titulo">No se pudo generar el turno</h2>
     <p id="modal-error-mensaje"></p>
@@ -71,9 +72,8 @@
   </dialog>
 
   <!--
-    Bloque exclusivo para la impresora térmica (58 mm).
-    En la pantalla normal permanece oculto; al imprimir, la hoja de estilos oculta todo
-    lo demás y deja únicamente el número de turno en grande y la fecha/hora exacta.
+    Área exclusiva para la impresora térmica de 58 mm.
+    En pantalla normal está oculta, pero al imprimir (@media print) es lo único que sale en el papel.
   -->
   <section id="ticket-impresion" class="solo-impresion" aria-hidden="true">
     <p id="ticket-codigo"></p>
@@ -84,8 +84,8 @@
   <script>
     const UI = window.TurnosUI;
 
-    // Tiempo (en segundos) que permanece visible el turno en pantalla después de imprimir el ticket.
-    let segundosRegreso = 3;
+    // Segundos que dura visible el turno en pantalla después de mandar a imprimir
+    const SEGUNDOS_REGRESO = 3;
 
     const pantallaSeleccion = document.getElementById('pantalla-seleccion');
     const pantallaConfirmacion = document.getElementById('pantalla-confirmacion');
@@ -98,70 +98,66 @@
     const botonesServicio = document.querySelectorAll('.btn-kiosco[data-tipo]');
 
     const reloj = UI.crearReloj(document.getElementById('reloj-servidor'));
-    let procesando = false;
+    let ocupado = false;
     let timerRegreso = null;
 
-    // Bloquea o libera los 3 botones para evitar que un doble toque genere dos tickets seguidos.
-    function bloquearBotones(bloqueado) {
-      procesando = bloqueado;
-      for (const boton of botonesServicio) {
-        boton.disabled = bloqueado;
+    // Desactiva los botones mientras se procesa el turno para que no saquen dos por accidente
+    function cambiarBloqueoBotones(bloqueado) {
+      ocupado = bloqueado;
+      for (const btn of botonesServicio) {
+        btn.disabled = bloqueado;
       }
     }
 
-    function volverAInicio() {
+    function regresarAlInicio() {
       clearTimeout(timerRegreso);
       timerRegreso = null;
       pantallaConfirmacion.classList.add('oculto');
       pantallaSeleccion.classList.remove('oculto');
-      bloquearBotones(false);
+      cambiarBloqueoBotones(false);
     }
 
-    async function pedirTurno(tipo) {
-      if (procesando) return;
-      bloquearBotones(true);
+    async function solicitarTurno(tipoServicio) {
+      if (ocupado) return;
+      cambiarBloqueoBotones(true);
 
       try {
-        const datos = await UI.enviarDatos('/api/turnos', { tipo });
-        const turno = datos.turno;
-        const fechaImpresion = turno.fechaHoraImpresion || UI.formatearFechaHora(reloj.ahoraMs());
+        const respuesta = await UI.enviarDatos('/api/turnos', { tipo: tipoServicio });
+        const turno = respuesta.turno;
+        const fechaTicket = turno.fechaHoraImpresion || UI.formatearFechaHora(reloj.ahoraMs());
 
-        // Preparamos primero el ticket oculto y el mensaje visible en pantalla.
+        // Llenamos los datos del ticket de 58 mm y de la tarjeta de confirmación
         ticketCodigo.textContent = turno.codigo;
-        ticketFecha.textContent = fechaImpresion;
+        ticketFecha.textContent = fechaTicket;
 
         confirmacionCodigo.textContent = turno.codigo;
-        confirmacionDetalle.textContent = `${UI.SERVICIOS[tipo] || tipo} • ${fechaImpresion}`;
+        confirmacionDetalle.textContent = `${UI.SERVICIOS[tipoServicio] || tipoServicio} • ${fechaTicket}`;
         pantallaSeleccion.classList.add('oculto');
         pantallaConfirmacion.classList.remove('oculto');
 
-        // Esperamos a que el navegador dibuje el nuevo código antes de abrir la impresión.
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            try {
-              window.print();
-            } finally {
-              clearTimeout(timerRegreso);
-              timerRegreso = setTimeout(volverAInicio, segundosRegreso * 1000);
-            }
-          });
-        });
+        // Damos un momento corto para que el navegador actualice el texto antes de abrir window.print()
+        setTimeout(() => {
+          try {
+            window.print();
+          } finally {
+            clearTimeout(timerRegreso);
+            timerRegreso = setTimeout(regresarAlInicio, SEGUNDOS_REGRESO * 1000);
+          }
+        }, 80);
       } catch (error) {
         UI.mostrarAviso(
           modalError,
           modalErrorMensaje,
           error.message || 'No se pudo conectar con el servidor de turnos.'
         );
-        bloquearBotones(false);
+        cambiarBloqueoBotones(false);
       }
     }
 
-    // Conectamos los 3 botones táctiles de servicio.
-    for (const boton of botonesServicio) {
-      boton.addEventListener('click', () => pedirTurno(boton.dataset.tipo));
+    for (const btn of botonesServicio) {
+      btn.addEventListener('click', () => solicitarTurno(btn.dataset.tipo));
     }
 
-    // Sincronizamos el reloj al abrir y lo refrescamos cada 15 segundos.
     UI.obtenerEstado()
       .then((estado) => reloj.sincronizar(estado.ahora))
       .catch(() => reloj.actualizar());

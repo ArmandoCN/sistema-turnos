@@ -1,16 +1,14 @@
 <!DOCTYPE html>
 <html lang="es">
 <!--
-  Panel de Ventanilla para cajeros, ejecutivos y asesores.
+  ventanilla.html - Panel de operación para cajeros, ejecutivos y atención a clientes
 
-  Cómo funciona esta pantalla:
-  1. Si este equipo todavía no tiene una ventanilla abierta, muestra las 7 ventanillas
-     disponibles (bloqueando las que ya está usando otra persona).
-  2. Guarda en la memoria del navegador (localStorage) qué ventanilla elegiste para que,
-     si recargas la página, recuperes tu turno y tu reloj activo automáticamente.
-  3. Cuando tienes un cliente asignado, basta tocar uno de los 4 botones grandes de
-     resultado para cerrarlo y llamar de inmediato al siguiente; si quieres descansar,
-     usa "Cerrar y pausar..." para elegir el motivo antes de pausar tu reloj.
+  Funcionamiento:
+  1. Al entrar muestra las 7 ventanillas; las que ya están ocupadas aparecen bloqueadas.
+  2. Guarda en localStorage cuál ventanilla abriste para que si refrescas la página (F5)
+     no pierdas el turno que estabas atendiendo ni tu contador de tiempo.
+  3. Tiene los 4 botones grandes para terminar el turno actual y llamar de inmediato al que sigue,
+     o el botón "Cerrar y pausar..." por si el cajero necesita salir un momento.
 -->
 <head>
   <meta charset="UTF-8">
@@ -35,7 +33,7 @@
     </header>
 
     <main>
-      <!-- Paso 1: Selector inicial de las 7 ventanillas -->
+      <!-- Paso 1: Elegir una de las 7 ventanillas -->
       <section id="vista-selector" aria-labelledby="titulo-selector">
         <div class="panel">
           <h2 id="titulo-selector" class="panel-titulo">Ventanillas disponibles</h2>
@@ -46,17 +44,17 @@
         </div>
       </section>
 
-      <!-- Paso 2: Área de trabajo cuando la ventanilla ya está abierta o en pausa -->
+      <!-- Paso 2: Panel cuando ya tienes tu ventanilla abierta o en pausa -->
       <section id="vista-operacion" class="oculto" aria-labelledby="operacion-nombre">
         <div class="rejilla-dividida">
-          <!-- Columna izquierda: Turno actual y botones grandes de cierre -->
+          <!-- Lado izquierdo: Turno que estás atendiendo y botones de cierre -->
           <article class="panel" aria-live="polite">
             <div class="ventanilla-atencion-cabecera">
               <h2 class="panel-titulo">Atención Actual</h2>
               <p id="turno-tiempos" class="encabezado-subtitulo"></p>
             </div>
 
-            <!-- Controles visibles cuando hay un cliente asignado -->
+            <!-- Se muestra cuando hay un turno en atención -->
             <div id="bloque-con-turno" class="oculto">
               <div class="turno-actual-resumen">
                 <span class="texto-suave">Turno asignado</span>
@@ -86,7 +84,7 @@
               </div>
             </div>
 
-            <!-- Controles visibles cuando la ventanilla está libre o en pausa -->
+            <!-- Se muestra cuando no tienes turno asignado o estás en pausa -->
             <div id="bloque-sin-turno" class="oculto">
               <p id="texto-estado-libre" class="encabezado-subtitulo">
                 Ventanilla libre en espera de cliente.
@@ -105,7 +103,7 @@
             </div>
           </article>
 
-          <!-- Columna derecha: Nombre de ventanilla, cronómetro activo y próximos turnos en fila -->
+          <!-- Lado derecho: Datos de tu ventanilla, cronómetro y fila de espera -->
           <div class="ventanilla-lateral">
             <article class="panel ventanilla-resumen">
               <div>
@@ -149,7 +147,7 @@
     </main>
   </div>
 
-  <!-- Ventana emergente para elegir el motivo antes de poner la ventanilla en pausa -->
+  <!-- Modal para elegir el motivo del turno antes de irse a pausa -->
   <dialog id="modal-pausa" class="modal" aria-labelledby="modal-pausa-titulo">
     <h2 id="modal-pausa-titulo" class="modal-titulo">Cerrar turno y pausar</h2>
     <p>
@@ -174,7 +172,7 @@
     </form>
   </dialog>
 
-  <!-- Aviso de error (por ejemplo, si otro empleado abrió la misma ventanilla al mismo tiempo) -->
+  <!-- Modal para mostrar errores (por ejemplo 409 si alguien más ganó la ventanilla) -->
   <dialog id="modal-error" class="modal modal-error" aria-labelledby="modal-error-titulo">
     <h2 id="modal-error-titulo" class="modal-titulo">Aviso de Operación</h2>
     <p id="modal-error-mensaje"></p>
@@ -186,7 +184,7 @@
   <script src="/comun.js"></script>
   <script>
     const UI = window.TurnosUI;
-    const CLAVE_MEMORIA = 'turnos_ventanilla_seleccionada';
+    const CLAVE_STORAGE = 'turnos_ventanilla_seleccionada';
 
     const subtituloVista = document.getElementById('subtitulo-vista');
     const vistaSelector = document.getElementById('vista-selector');
@@ -194,20 +192,20 @@
     const vistaOperacion = document.getElementById('vista-operacion');
 
     const operacionNombre = document.getElementById('operacion-nombre');
-    const operacionServicioBadge = document.getElementById('operacion-servicio-badge');
-    const operacionEstadoBadge = document.getElementById('operacion-estado-badge');
-    const operacionCola = document.getElementById('operacion-cola');
-    const operacionCronometro = document.getElementById('operacion-cronometro');
+    const etiquetaServicio = document.getElementById('operacion-servicio-badge');
+    const etiquetaEstado = document.getElementById('operacion-estado-badge');
+    const textoCola = document.getElementById('operacion-cola');
+    const textoCronometro = document.getElementById('operacion-cronometro');
 
     const bloqueConTurno = document.getElementById('bloque-con-turno');
     const turnoCodigo = document.getElementById('turno-codigo');
     const turnoTiempos = document.getElementById('turno-tiempos');
-    const botonesCerrarSiguiente = document.querySelectorAll('[data-resultado-siguiente]');
+    const botonesCierreDirecto = document.querySelectorAll('[data-resultado-siguiente]');
     const btnCerrarPausar = document.getElementById('btn-cerrar-pausar');
 
     const modalPausa = document.getElementById('modal-pausa');
     const modalPausaCodigo = document.getElementById('modal-pausa-codigo');
-    const botonesCerrarPausar = document.querySelectorAll('[data-resultado-pausar]');
+    const botonesCierreConPausa = document.querySelectorAll('[data-resultado-pausar]');
 
     const bloqueSinTurno = document.getElementById('bloque-sin-turno');
     const textoEstadoLibre = document.getElementById('texto-estado-libre');
@@ -224,29 +222,28 @@
 
     const reloj = UI.crearReloj(document.getElementById('reloj-servidor'));
 
-    // Variables de estado de esta sesión.
-    let ventanillaActual = localStorage.getItem(CLAVE_MEMORIA) || null;
-    let turnoActualId = null;
-    let turnoActualCodigo = '';
-    let segundosBaseHoy = 0;
-    let momentoSincronizacionMs = Date.now();
-    let ventanillaActiva = false;
-    let peticionEnCurso = false;
+    // Datos de la ventanilla que tiene abierta esta pestaña
+    let miVentanilla = localStorage.getItem(CLAVE_STORAGE) || null;
+    let turnoActivoId = null;
+    let turnoActivoCodigo = '';
+    let segundosAcumulados = 0;
+    let momentoSync = Date.now();
+    let estaActiva = false;
+    let enviandoPeticion = false;
 
-    // Avanza el reloj de la barra superior y el cronómetro de tiempo activo cada segundo.
-    function actualizarRelojYCronometro() {
+    // Actualiza cada segundo el reloj de arriba y el cronómetro de la ventanilla
+    function actualizarRelojes() {
       reloj.actualizar();
-      if (!ventanillaActual) return;
+      if (!miVentanilla) return;
 
-      const extra = ventanillaActiva
-        ? Math.max(0, Math.floor((Date.now() - momentoSincronizacionMs) / 1000))
+      const segundosExtra = estaActiva
+        ? Math.max(0, Math.floor((Date.now() - momentoSync) / 1000))
         : 0;
-      operacionCronometro.textContent = UI.formatearCronometro(segundosBaseHoy + extra);
+      textoCronometro.textContent = UI.formatearCronometro(segundosAcumulados + segundosExtra);
     }
 
-    // Deshabilita temporalmente los botones mientras esperamos respuesta del servidor.
-    function bloquearAccionesOperacion(bloqueado) {
-      for (const btn of botonesCerrarSiguiente) btn.disabled = bloqueado;
+    function cambiarBloqueoControles(bloqueado) {
+      for (const btn of botonesCierreDirecto) btn.disabled = bloqueado;
       btnCerrarPausar.disabled = bloqueado;
       btnVolverPausa.disabled = bloqueado;
       btnCerrarVentanilla.disabled = bloqueado;
@@ -255,11 +252,11 @@
       }
     }
 
-    // Ejecuta una petición POST protegiendo contra dobles clics y mostrando el aviso si hay error.
-    async function ejecutarAccion(ruta, datos) {
-      if (peticionEnCurso) return null;
-      peticionEnCurso = true;
-      bloquearAccionesOperacion(true);
+    // Manda una petición POST al servidor cuidando que no le den doble clic seguido
+    async function mandarAccion(ruta, datos) {
+      if (enviandoPeticion) return null;
+      enviandoPeticion = true;
+      cambiarBloqueoControles(true);
 
       try {
         return await UI.enviarDatos(ruta, datos);
@@ -271,26 +268,25 @@
         );
         return null;
       } finally {
-        peticionEnCurso = false;
-        bloquearAccionesOperacion(false);
+        enviandoPeticion = false;
+        cambiarBloqueoControles(false);
       }
     }
 
-    // Dibuja o actualiza las 7 tarjetas iniciales sin destruir las existentes en cada aviso en vivo.
-    function mostrarSelectorVentanillas(ventanillas) {
-      const botonesActuales = new Map();
+    // Dibuja los 7 botones para elegir ventanilla
+    function dibujarSelector(ventanillas) {
+      const existentes = {};
       for (const btn of gridVentanillas.querySelectorAll('button[data-ventanilla]')) {
-        botonesActuales.set(btn.dataset.ventanilla, btn);
+        existentes[btn.dataset.ventanilla] = btn;
       }
 
-      if (botonesActuales.size !== ventanillas.length) {
+      if (Object.keys(existentes).length !== ventanillas.length) {
         gridVentanillas.textContent = '';
-        botonesActuales.clear();
       }
 
       for (const v of ventanillas) {
         const ocupada = v.estado !== 'cerrado';
-        let boton = botonesActuales.get(v.ventanilla);
+        let boton = existentes[v.ventanilla];
 
         if (!boton) {
           const titulo = UI.crearElemento('span', { clase: 'opcion-titulo', texto: v.ventanilla });
@@ -307,7 +303,7 @@
             atributos: { type: 'button', 'data-ventanilla': v.ventanilla },
             hijos: [titulo, badgeServicio, badgeEstado]
           });
-          boton.addEventListener('click', () => abrirVentanilla(v.ventanilla));
+          boton.addEventListener('click', () => elegirVentanilla(v.ventanilla));
           gridVentanillas.appendChild(boton);
         }
 
@@ -322,11 +318,11 @@
       }
     }
 
-    // Rellena la tabla con los clientes que siguen esperando este mismo servicio.
-    function mostrarColaServicio(listaEspera) {
+    // Llena la tabla con los turnos que están formados esperando este servicio
+    function dibujarTablaEspera(colaServicio) {
       tbodyFilaServicio.textContent = '';
 
-      if (!listaEspera || listaEspera.length === 0) {
+      if (!colaServicio || colaServicio.length === 0) {
         filaVaciaTexto.classList.remove('oculto');
         tablaFilaServicio.classList.add('oculto');
         return;
@@ -335,7 +331,7 @@
       filaVaciaTexto.classList.add('oculto');
       tablaFilaServicio.classList.remove('oculto');
 
-      for (const turno of listaEspera) {
+      for (const turno of colaServicio) {
         const fila = UI.crearElemento('tr', {
           hijos: [
             UI.crearElemento('td', { texto: turno.codigo }),
@@ -346,60 +342,60 @@
       }
     }
 
-    // Actualiza toda la pantalla según la información recibida del servidor.
-    function aplicarEstado(estado) {
+    // Refresca la pantalla con los datos que llegaron del servidor
+    function pintarEstado(estado) {
       if (!estado || !Array.isArray(estado.ventanillas)) return;
       reloj.sincronizar(estado.ahora);
 
-      const elegida = ventanillaActual
-        ? estado.ventanillas.find((v) => v.ventanilla === ventanillaActual)
+      const datosMiVentanilla = miVentanilla
+        ? estado.ventanillas.find((v) => v.ventanilla === miVentanilla)
         : null;
 
-      // Si la ventanilla aparece cerrada en el servidor (por cierre manual, corte 18:00 o 2h sin uso),
-      // olvidamos la sesión guardada y regresamos al selector inicial.
-      if (!elegida || elegida.estado === 'cerrado') {
+      // Si en el servidor aparece cerrada (porque la cerramos, dieron las 18:00 o pasaron 2h sin uso),
+      // limpiamos localStorage y regresamos a la pantalla de selección.
+      if (!datosMiVentanilla || datosMiVentanilla.estado === 'cerrado') {
         if (modalPausa.open) modalPausa.close();
-        if (ventanillaActual) {
-          ventanillaActual = null;
-          localStorage.removeItem(CLAVE_MEMORIA);
+        if (miVentanilla) {
+          miVentanilla = null;
+          localStorage.removeItem(CLAVE_STORAGE);
         }
-        turnoActualId = null;
-        turnoActualCodigo = '';
-        ventanillaActiva = false;
-        segundosBaseHoy = 0;
+        turnoActivoId = null;
+        turnoActivoCodigo = '';
+        estaActiva = false;
+        segundosAcumulados = 0;
 
         subtituloVista.textContent = 'Seleccione su ventanilla para iniciar operaciones';
         vistaOperacion.classList.add('oculto');
         vistaSelector.classList.remove('oculto');
-        mostrarSelectorVentanillas(estado.ventanillas);
-        actualizarRelojYCronometro();
+        dibujarSelector(estado.ventanillas);
+        actualizarRelojes();
         return;
       }
 
       vistaSelector.classList.add('oculto');
       vistaOperacion.classList.remove('oculto');
 
-      const nombreServicio = UI.SERVICIOS[elegida.tipo_servicio] || elegida.tipo_servicio;
-      subtituloVista.textContent = `Operando ${elegida.ventanilla} — Servicio ${nombreServicio}`;
+      const nombreServicio = UI.SERVICIOS[datosMiVentanilla.tipo_servicio] || datosMiVentanilla.tipo_servicio;
+      subtituloVista.textContent = `Operando ${datosMiVentanilla.ventanilla} — Servicio ${nombreServicio}`;
 
-      operacionNombre.textContent = elegida.ventanilla;
-      operacionServicioBadge.className = `etiqueta etiqueta--${elegida.tipo_servicio}`;
-      operacionServicioBadge.textContent = nombreServicio;
-      operacionEstadoBadge.className = `etiqueta etiqueta--${elegida.estado}`;
-      operacionEstadoBadge.textContent = UI.ESTADOS_VENTANILLA[elegida.estado] || elegida.estado;
+      operacionNombre.textContent = datosMiVentanilla.ventanilla;
+      etiquetaServicio.className = `etiqueta etiqueta--${datosMiVentanilla.tipo_servicio}`;
+      etiquetaServicio.textContent = nombreServicio;
+      etiquetaEstado.className = `etiqueta etiqueta--${datosMiVentanilla.estado}`;
+      etiquetaEstado.textContent = UI.ESTADOS_VENTANILLA[datosMiVentanilla.estado] || datosMiVentanilla.estado;
 
-      segundosBaseHoy = elegida.segundosActivos || 0;
-      momentoSincronizacionMs = Date.now();
-      ventanillaActiva = elegida.estado === 'activo';
+      segundosAcumulados = datosMiVentanilla.segundosActivos || 0;
+      momentoSync = Date.now();
+      estaActiva = datosMiVentanilla.estado === 'activo';
 
-      const cola = (estado.filasEspera && estado.filasEspera[elegida.tipo_servicio]) || [];
-      operacionCola.textContent = `${cola.length} en espera`;
-      mostrarColaServicio(cola);
+      const cola = (estado.filasEspera && estado.filasEspera[datosMiVentanilla.tipo_servicio]) || [];
+      textoCola.textContent = `${cola.length} en espera`;
+      dibujarTablaEspera(cola);
 
-      const turno = elegida.turnoActual;
-      if (turno && elegida.estado === 'activo') {
-        turnoActualId = turno.id;
-        turnoActualCodigo = turno.codigo;
+      const turno = datosMiVentanilla.turnoActual;
+      if (turno && datosMiVentanilla.estado === 'activo') {
+        turnoActivoId = turno.id;
+        turnoActivoCodigo = turno.codigo;
 
         turnoCodigo.textContent = turno.codigo;
         turnoTiempos.textContent =
@@ -410,16 +406,16 @@
         bloqueSinTurno.classList.add('oculto');
       } else {
         if (modalPausa.open) modalPausa.close();
-        turnoActualId = null;
-        turnoActualCodigo = '';
+        turnoActivoId = null;
+        turnoActivoCodigo = '';
         turnoTiempos.textContent = '';
 
         bloqueConTurno.classList.add('oculto');
         bloqueSinTurno.classList.remove('oculto');
 
-        const enPausa = elegida.estado === 'pausa';
+        const enPausa = datosMiVentanilla.estado === 'pausa';
         btnLlamarSiguiente.classList.toggle('oculto', enPausa);
-        btnLlamarSiguiente.disabled = peticionEnCurso || cola.length === 0;
+        btnLlamarSiguiente.disabled = enviandoPeticion || cola.length === 0;
         btnVolverPausa.classList.toggle('oculto', !enPausa);
         textoEstadoLibre.textContent = enPausa
           ? 'Ventanilla en pausa. El contador de tiempo activo está detenido.'
@@ -428,12 +424,12 @@
             : 'Ventanilla libre en espera de cliente. El próximo turno se asignará automáticamente.';
       }
 
-      actualizarRelojYCronometro();
+      actualizarRelojes();
     }
 
-    async function recargarEstado() {
+    async function cargarEstadoInicial() {
       try {
-        aplicarEstado(await UI.obtenerEstado());
+        pintarEstado(await UI.obtenerEstado());
       } catch (_) {
         UI.mostrarAviso(
           modalError,
@@ -443,90 +439,87 @@
       }
     }
 
-    async function abrirVentanilla(nombre) {
-      const respuesta = await ejecutarAccion('/api/ventanillas/abrir', { ventanilla: nombre });
+    async function elegirVentanilla(nombre) {
+      const respuesta = await mandarAccion('/api/ventanillas/abrir', { ventanilla: nombre });
       if (!respuesta) {
-        recargarEstado();
+        cargarEstadoInicial();
         return;
       }
-      ventanillaActual = nombre;
-      localStorage.setItem(CLAVE_MEMORIA, nombre);
-      await recargarEstado();
+      miVentanilla = nombre;
+      localStorage.setItem(CLAVE_STORAGE, nombre);
+      await cargarEstadoInicial();
     }
 
-    async function cerrarTurnoActual(resultado, pausar) {
-      if (!ventanillaActual || !turnoActualId || !resultado) return;
-      const respuesta = await ejecutarAccion('/api/turnos/cerrar', {
-        turno_id: turnoActualId,
-        ventanilla: ventanillaActual,
+    async function finalizarTurno(resultado, pausar) {
+      if (!miVentanilla || !turnoActivoId || !resultado) return;
+      const respuesta = await mandarAccion('/api/turnos/cerrar', {
+        turno_id: turnoActivoId,
+        ventanilla: miVentanilla,
         resultado,
         pausar
       });
       if (respuesta) {
-        await recargarEstado();
+        await cargarEstadoInicial();
       }
     }
 
-    async function llamarSiguiente() {
-      if (!ventanillaActual) return;
-      const respuesta = await ejecutarAccion('/api/ventanillas/llamar', {
-        ventanilla: ventanillaActual
+    async function pedirSiguiente() {
+      if (!miVentanilla) return;
+      const respuesta = await mandarAccion('/api/ventanillas/llamar', {
+        ventanilla: miVentanilla
       });
       if (respuesta) {
-        await recargarEstado();
+        await cargarEstadoInicial();
       }
     }
 
-    async function cambiarEstadoVentanilla(accion) {
-      if (!ventanillaActual) return;
-      const respuesta = await ejecutarAccion('/api/ventanillas/estado', {
-        ventanilla: ventanillaActual,
+    async function cambiarEstado(accion) {
+      if (!miVentanilla) return;
+      const respuesta = await mandarAccion('/api/ventanillas/estado', {
+        ventanilla: miVentanilla,
         accion
       });
       if (respuesta) {
         if (accion === 'cerrar') {
-          ventanillaActual = null;
-          localStorage.removeItem(CLAVE_MEMORIA);
+          miVentanilla = null;
+          localStorage.removeItem(CLAVE_STORAGE);
         }
-        await recargarEstado();
+        await cargarEstadoInicial();
       }
     }
 
-    // Conectamos los 4 botones directos de cierre (cierran el turno y llaman al siguiente).
-    for (const boton of botonesCerrarSiguiente) {
+    for (const boton of botonesCierreDirecto) {
       boton.addEventListener('click', () => {
-        cerrarTurnoActual(boton.dataset.resultadoSiguiente, false);
+        finalizarTurno(boton.dataset.resultadoSiguiente, false);
       });
     }
 
-    // "Cerrar y pausar..." pregunta primero el motivo antes de detener el reloj.
     btnCerrarPausar.addEventListener('click', () => {
-      if (!turnoActualId) return;
-      modalPausaCodigo.textContent = turnoActualCodigo || '---';
+      if (!turnoActivoId) return;
+      modalPausaCodigo.textContent = turnoActivoCodigo || '---';
       if (!modalPausa.open) modalPausa.showModal();
     });
 
-    for (const boton of botonesCerrarPausar) {
+    for (const boton of botonesCierreConPausa) {
       boton.addEventListener('click', () => {
         const motivo = boton.dataset.resultadoPausar;
         if (modalPausa.open) modalPausa.close();
-        cerrarTurnoActual(motivo, true);
+        finalizarTurno(motivo, true);
       });
     }
 
-    btnLlamarSiguiente.addEventListener('click', llamarSiguiente);
-    btnVolverPausa.addEventListener('click', () => cambiarEstadoVentanilla('reanudar'));
-    btnCerrarVentanilla.addEventListener('click', () => cambiarEstadoVentanilla('cerrar'));
-    modalError.addEventListener('close', recargarEstado);
+    btnLlamarSiguiente.addEventListener('click', pedirSiguiente);
+    btnVolverPausa.addEventListener('click', () => cambiarEstado('reanudar'));
+    btnCerrarVentanilla.addEventListener('click', () => cambiarEstado('cerrar'));
+    modalError.addEventListener('close', cargarEstadoInicial);
 
-    // Arranque: consultamos estado actual, conectamos actualizaciones en vivo y activamos reloj de 1 s.
-    recargarEstado();
+    cargarEstadoInicial();
     UI.conectarEnVivo({
       cajaEstado: document.getElementById('estado-sse'),
       textoEstado: document.getElementById('texto-sse'),
-      alRecibir: (aviso) => aplicarEstado(aviso.estado)
+      alRecibir: (datos) => pintarEstado(datos.estado)
     });
-    setInterval(actualizarRelojYCronometro, 1000);
+    setInterval(actualizarRelojes, 1000);
   </script>
 </body>
 </html>
